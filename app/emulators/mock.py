@@ -48,5 +48,16 @@ class MockEmulatorProvider(EmulatorProvider):
         self.stop(index)
         self.start(index)
 
+    def set_http_proxy(self, index: int, host: str, port: int) -> str:
+        proxy = f"{host}:{port}"
+        self._find(index).proxy = proxy
+        return proxy
+
+    def clear_http_proxy(self, index: int) -> None:
+        self._find(index).proxy = None
+
+    def get_http_proxy(self, index: int) -> str:
+        return self._find(index).proxy or ""
+
     def _find(self, index: int) -> EmulatorInstance:
         return next(item for item in self._instances if item.index == index)

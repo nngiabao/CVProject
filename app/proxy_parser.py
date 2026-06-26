@@ -30,12 +30,38 @@ def _parse_table_row(value: str, default_scheme: str) -> ProxyConfig | None:
     )
 
 
+def _parse_colon_row(value: str, default_scheme: str) -> ProxyConfig | None:
+    parts = value.split(":")
+    if len(parts) != 4:
+        return None
+
+    host, port_text, username, password = (part.strip() for part in parts)
+    if not host or not port_text or not username:
+        return None
+
+    try:
+        port = int(port_text)
+    except ValueError:
+        return None
+
+    return ProxyConfig(
+        scheme=default_scheme,
+        host=host,
+        port=port,
+        username=username,
+        password=password,
+    )
+
+
 def parse_proxy_line(line: str, default_scheme: str = "socks5") -> ProxyConfig:
     value = line.strip()
     if not value:
         raise ValueError("Proxy line is empty")
 
     if "://" not in value:
+        colon_proxy = _parse_colon_row(value, default_scheme)
+        if colon_proxy:
+            return colon_proxy
         table_proxy = _parse_table_row(value, default_scheme)
         if table_proxy:
             return table_proxy

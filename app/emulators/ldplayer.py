@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from ctypes import POINTER, WinDLL, get_last_error
 from ctypes.wintypes import BOOL, DWORD, HANDLE
 from pathlib import Path
@@ -186,3 +187,43 @@ class LdPlayerProvider(EmulatorProvider):
 
     def restart(self, index: int) -> None:
         self._run("reboot", "--index", str(index))
+
+    def set_http_proxy(self, index: int, host: str, port: int) -> str:
+        expected = f"{host}:{port}"
+        self._wait_for_adb(index)
+        self._adb(index, f"shell settings put global http_proxy {expected}")
+        self._adb(index, f"shell settings put global global_http_proxy_host {host}")
+        self._adb(index, f"shell settings put global global_http_proxy_port {port}")
+        applied = self.get_http_proxy(index)
+        if applied != expected:
+            raise RuntimeError(f"Android proxy was not applied. Expected {expected}, got {applied or 'empty'}")
+        return applied
+
+    def clear_http_proxy(self, index: int) -> None:
+        try:
+            self._wait_for_adb(index, timeout=10)
+        except RuntimeError:
+            return
+        self._adb(index, "shell settings put global http_proxy :0")
+        self._adb(index, "shell settings delete global global_http_proxy_host")
+        self._adb(index, "shell settings delete global global_http_proxy_port")
+
+    def get_http_proxy(self, index: int) -> str:
+        return self._adb(index, "shell settings get global http_proxy").strip()
+
+    def _adb(self, index: int, command: str) -> str:
+        return self._run("adb", "--index", str(index), "--command", command)
+
+    def _wait_for_adb(self, index: int, timeout: int = 45) -> None:
+        deadline = time.monotonic() + timeout
+        last_error = "device not ready"
+        while time.monotonic() < deadline:
+            try:
+                output = self._adb(index, "shell getprop sys.boot_completed").strip()
+                if output == "1":
+                    return
+                last_error = output or "Android is still booting"
+            except RuntimeError as exc:
+                last_error = str(exc)
+            time.sleep(2)
+        raise RuntimeError(f"ADB is not ready for instance {index}: {last_error}")
