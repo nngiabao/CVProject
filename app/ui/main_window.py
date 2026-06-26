@@ -1,21 +1,22 @@
 from __future__ import annotations
 
+import socket
 from collections.abc import Callable
+from pathlib import Path
 
 from PySide6.QtCore import QTimer, Qt
 from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QComboBox,
+    QFileDialog,
     QFrame,
     QHBoxLayout,
     QHeaderView,
     QLabel,
     QMainWindow,
     QMessageBox,
-    QPlainTextEdit,
     QPushButton,
-    QSplitter,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
@@ -35,6 +36,8 @@ class MainWindow(QMainWindow):
         self.proxies: list[ProxyConfig] = []
         self.assignments: dict[int, ProxyConfig] = {}
         self.proxy_cursor = 0
+        self.proxy_checks: dict[int, tuple[str, str]] = {}
+        self.proxy_summary: QLabel | None = None
 
         self.setWindowTitle("Emulator Proxy Manager")
         self.resize(1240, 760)
@@ -96,9 +99,18 @@ class MainWindow(QMainWindow):
         select_all.clicked.connect(self.table_select_all)
         clear = QPushButton("Clear")
         clear.clicked.connect(self.clear_selection)
-        assign = QPushButton("Assign proxies")
+        load = QPushButton("Load SOCKS5 proxies")
+        load.setObjectName("primary")
+        load.clicked.connect(self.load_proxies_from_file)
+        clear_proxies = QPushButton("Clear proxies")
+        clear_proxies.clicked.connect(self.clear_proxies)
+        self.proxy_summary = QLabel("SOCKS5 proxies: 0")
+        self.proxy_summary.setObjectName("muted")
+        assign = QPushButton("Assign proxy to selected")
         assign.setObjectName("primary")
         assign.clicked.connect(self.assign_proxies)
+        check = QPushButton("Check selected proxies")
+        check.clicked.connect(self.check_selected_proxies)
         self.assignment_mode = QComboBox()
         self.assignment_mode.addItem("Same proxy to selected", "same")
         self.assignment_mode.addItem("Different proxies", "different")
@@ -114,22 +126,17 @@ class MainWindow(QMainWindow):
         route.setToolTip("Available after the WinDivert routing service is implemented")
         route.setEnabled(False)
 
-        for button in (select_all, clear, assign):
+        for button in (select_all, clear, load, clear_proxies, assign, check):
             layout.addWidget(button)
         layout.addWidget(self.assignment_mode)
+        layout.addWidget(self.proxy_summary)
         for button in (start, stop, restart, route):
             layout.addWidget(button)
         layout.addStretch()
         return frame
 
     def _build_content(self) -> QWidget:
-        splitter = QSplitter(Qt.Orientation.Horizontal)
-        splitter.addWidget(self._build_instance_panel())
-        splitter.addWidget(self._build_proxy_panel())
-        splitter.setStretchFactor(0, 4)
-        splitter.setStretchFactor(1, 2)
-        splitter.setSizes([820, 390])
-        return splitter
+        return self._build_instance_panel()
 
     def _build_instance_panel(self) -> QWidget:
         frame = QFrame()
@@ -140,9 +147,19 @@ class MainWindow(QMainWindow):
         heading.setObjectName("metric")
         layout.addWidget(heading)
 
-        self.table = QTableWidget(0, 7)
+        self.table = QTableWidget(0, 9)
         self.table.setHorizontalHeaderLabels(
-            ["#", "Platform", "Instance", "PID", "State", "Proxy status", "Proxy"]
+            [
+                "#",
+                "Platform",
+                "Instance",
+                "PID",
+                "State",
+                "Proxy status",
+                "Proxy running",
+                "Proxy IP",
+                "Proxy",
+            ]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
         self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
@@ -152,49 +169,8 @@ class MainWindow(QMainWindow):
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
         header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
-        header.setSectionResizeMode(6, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table, 1)
-        return frame
-
-    def _build_proxy_panel(self) -> QWidget:
-        frame = QFrame()
-        frame.setObjectName("panel")
-        layout = QVBoxLayout(frame)
-        layout.setContentsMargins(12, 12, 12, 12)
-
-        heading = QLabel("Proxy configuration")
-        heading.setObjectName("metric")
-        layout.addWidget(heading)
-        help_text = QLabel("One proxy per line. Credentials are masked in the table.")
-        help_text.setObjectName("muted")
-        help_text.setWordWrap(True)
-        layout.addWidget(help_text)
-
-        self.proxy_type = QComboBox()
-        self.proxy_type.addItems(["socks5", "http", "https", "socks4", "socks4a"])
-        layout.addWidget(self.proxy_type)
-
-        self.proxy_editor = QPlainTextEdit()
-        self.proxy_editor.setPlaceholderText(
-            "127.0.0.1:1080\n"
-            "user:password@proxy.example.com:1080\n"
-            "socks5://user:password@10.0.0.2:1080"
-        )
-        layout.addWidget(self.proxy_editor, 1)
-
-        button_row = QHBoxLayout()
-        load = QPushButton("Load proxies")
-        load.setObjectName("primary")
-        load.clicked.connect(self.load_proxies)
-        clear = QPushButton("Clear proxies")
-        clear.clicked.connect(self.clear_proxies)
-        button_row.addWidget(load)
-        button_row.addWidget(clear)
-        layout.addLayout(button_row)
-
-        self.proxy_summary = QLabel("Loaded: 0")
-        self.proxy_summary.setObjectName("muted")
-        layout.addWidget(self.proxy_summary)
         return frame
 
     def refresh_instances(self) -> None:
@@ -222,6 +198,8 @@ class MainWindow(QMainWindow):
                 str(instance.pid or "—"),
                 instance.state.value,
                 "Assigned" if assigned else "Unassigned",
+                self.proxy_checks.get(instance.index, ("Not checked", "—"))[0] if assigned else "—",
+                self.proxy_checks.get(instance.index, ("Not checked", "—"))[1] if assigned else "—",
                 assigned.display if assigned else "—",
             )
             for column, value in enumerate(values):
@@ -238,6 +216,9 @@ class MainWindow(QMainWindow):
                     item.setForeground(QColor(color))
                 if column == 5:
                     item.setForeground(QColor("#a787ff" if assigned else "#8f97ad"))
+                if column == 6:
+                    running_colors = {"Running": "#43cf78", "Not running": "#ef6c72", "Not checked": "#f0b84b"}
+                    item.setForeground(QColor(running_colors.get(value, "#8f97ad")))
                 self.table.setItem(row, column, item)
 
         running = sum(item.state == InstanceState.RUNNING for item in self.instances)
@@ -255,23 +236,46 @@ class MainWindow(QMainWindow):
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         return [self.instances[row].index for row in rows]
 
-    def load_proxies(self) -> None:
-        proxies, errors = parse_proxy_text(self.proxy_editor.toPlainText(), self.proxy_type.currentText())
+    def load_proxies_from_file(self) -> None:
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Load SOCKS5 proxies",
+            str(Path.home()),
+            "Text files (*.txt);;All files (*)",
+        )
+        if not file_name:
+            return
+
+        try:
+            proxy_text = Path(file_name).read_text(encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self, "Proxy file error", str(exc))
+            return
+
+        parsed_proxies, errors = parse_proxy_text(proxy_text, "socks5")
+        proxies = []
+        for proxy in parsed_proxies:
+            if proxy.scheme != "socks5":
+                errors.append(f"Skipped {proxy.display}: only SOCKS5 proxies are supported")
+                continue
+            proxies.append(proxy)
         self.proxies = proxies
         self.proxy_cursor = 0
-        summary = f"Loaded: {len(proxies)}"
+        self.proxy_checks.clear()
+        summary = f"SOCKS5 proxies: {len(proxies)}"
         if errors:
             summary += f" · Invalid: {len(errors)}"
             QMessageBox.warning(self, "Some proxies were skipped", "\n".join(errors[:10]))
-        self.proxy_summary.setText(summary)
+        self._set_proxy_summary(summary)
+        self._render_instances()
         self.statusBar().showMessage(summary, 5000)
 
     def clear_proxies(self) -> None:
         self.proxies.clear()
         self.assignments.clear()
+        self.proxy_checks.clear()
         self.proxy_cursor = 0
-        self.proxy_editor.clear()
-        self.proxy_summary.setText("Loaded: 0")
+        self._set_proxy_summary("SOCKS5 proxies: 0")
         self._render_instances()
 
     def assign_proxies(self) -> None:
@@ -280,8 +284,7 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
             return
         if not self.proxies:
-            self.load_proxies()
-        if not self.proxies:
+            QMessageBox.information(self, "Load proxies", "Load a SOCKS5 proxy list before assigning proxies.")
             return
 
         mode = self.assignment_mode.currentData()
@@ -289,14 +292,49 @@ class MainWindow(QMainWindow):
             proxy = self.proxies[self.proxy_cursor % len(self.proxies)]
             for instance_index in indexes:
                 self.assignments[instance_index] = proxy
+                self.proxy_checks[instance_index] = self._check_proxy(proxy)
             self.proxy_cursor += 1
         else:
             for position, instance_index in enumerate(indexes):
                 proxy_index = (self.proxy_cursor + position) % len(self.proxies)
-                self.assignments[instance_index] = self.proxies[proxy_index]
+                proxy = self.proxies[proxy_index]
+                self.assignments[instance_index] = proxy
+                self.proxy_checks[instance_index] = self._check_proxy(proxy)
             self.proxy_cursor += len(indexes)
         self._render_instances()
         self.statusBar().showMessage(f"Assigned proxies to {len(indexes)} instance(s)", 5000)
+
+    def check_selected_proxies(self) -> None:
+        indexes = self.selected_indexes()
+        if not indexes:
+            QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
+            return
+
+        checked = 0
+        for instance_index in indexes:
+            proxy = self.assignments.get(instance_index)
+            if not proxy:
+                continue
+            self.proxy_checks[instance_index] = self._check_proxy(proxy)
+            checked += 1
+        self._render_instances()
+        self.statusBar().showMessage(f"Checked {checked} assigned proxy/proxies", 5000)
+
+    def _check_proxy(self, proxy: ProxyConfig) -> tuple[str, str]:
+        try:
+            proxy_ip = socket.gethostbyname(proxy.host)
+        except OSError:
+            proxy_ip = proxy.host
+
+        try:
+            with socket.create_connection((proxy.host, proxy.port), timeout=3):
+                return "Running", proxy_ip
+        except OSError:
+            return "Not running", proxy_ip
+
+    def _set_proxy_summary(self, text: str) -> None:
+        if self.proxy_summary is not None:
+            self.proxy_summary.setText(text)
 
     def _run_selected(self, action: Callable[[int], None], verb: str) -> None:
         indexes = self.selected_indexes()

@@ -25,3 +25,10 @@ starting, stopped, and stale instances.
 
 If LDPlayer is not found, the application opens in demo mode with sample
 instances so the interface can still be developed and reviewed.
+
+## Proxy workflow
+
+Proxy assignment is SOCKS5-only. Use **Load SOCKS5 proxies** to import a text
+file with one proxy per line, select one or more emulator rows, then use
+**Assign proxy to selected**. The instance table shows the assigned proxy, the
+resolved proxy IP, and whether the proxy host and port are reachable.
