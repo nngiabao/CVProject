@@ -4,7 +4,7 @@ import ipaddress
 import threading
 import time
 from dataclasses import dataclass, field
-from typing import Any
+from typing import Any, Optional
 
 from app.windows_netstat import tcp_owner_pids, udp_owner_pids
 
@@ -12,21 +12,21 @@ from app.windows_netstat import tcp_owner_pids, udp_owner_pids
 SOCKET_REFRESH_SECONDS = 1.0
 
 
-@dataclass(slots=True)
+@dataclass
 class GuardStats:
     forwarded: int = 0
     blocked: int = 0
     protected_pids: int = 0
-    last_error: str | None = None
+    last_error: Optional[str] = None
 
 
-@dataclass(slots=True)
+@dataclass
 class WinDivertGuard:
     protected_pids: set[int] = field(default_factory=set)
     stats: GuardStats = field(default_factory=GuardStats)
-    _thread: threading.Thread | None = None
+    _thread: Optional[threading.Thread] = None
     _stop_event: threading.Event = field(default_factory=threading.Event)
-    _handle: Any | None = None
+    _handle: Optional[Any] = None
     _lock: threading.Lock = field(default_factory=threading.Lock)
 
     @property
@@ -103,7 +103,7 @@ class WinDivertGuard:
             return set(self.protected_pids)
 
     @staticmethod
-    def _owner_pid(packet: object, tcp_map: dict[tuple[str, int], int], udp_map: dict[tuple[str, int], int]) -> int | None:
+    def _owner_pid(packet: object, tcp_map: dict[tuple[str, int], int], udp_map: dict[tuple[str, int], int]) -> Optional[int]:
         source_key = (packet.src_addr, packet.src_port)
         destination_key = (packet.dst_addr, packet.dst_port)
         if packet.tcp is not None:
@@ -113,7 +113,7 @@ class WinDivertGuard:
         return None
 
     @staticmethod
-    def _is_public_destination(address: str | None) -> bool:
+    def _is_public_destination(address: Optional[str]) -> bool:
         if not address:
             return False
         try:

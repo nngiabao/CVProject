@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 from collections.abc import Callable
 from pathlib import Path
 
@@ -47,10 +48,10 @@ class MainWindow(QMainWindow):
         self.bot_manager = BotManager(self.routing)
         self.windivert_guard = WinDivertGuard()
         self.windivert_status: WinDivertStatus = check_windivert()
-        self.proxy_summary: QLabel | None = None
-        self.bot_heading: QLabel | None = None
+        self.proxy_summary: Optional[QLabel] = None
+        self.bot_heading: Optional[QLabel] = None
         self.bot_metrics: list[QLabel] = []
-        self.task_table: QTableWidget | None = None
+        self.task_table: Optional[QTableWidget] = None
 
         self.setWindowTitle("GrowStone Bot")
         self.resize(1240, 760)
@@ -147,7 +148,7 @@ class MainWindow(QMainWindow):
         return frame
 
     def _build_content(self) -> QWidget:
-        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter = QSplitter(Qt.Horizontal)
         splitter.addWidget(self._build_instance_panel())
         splitter.addWidget(self._build_bot_panel())
         splitter.setSizes([620, 620])
@@ -177,17 +178,17 @@ class MainWindow(QMainWindow):
                 "Routing",
             ]
         )
-        self.table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
-        self.table.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
-        self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.ExtendedSelection)
+        self.table.setEditTriggers(QAbstractItemView.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
         self.table.itemSelectionChanged.connect(self.render_selected_instance_tasks)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        header.setSectionResizeMode(QHeaderView.ResizeToContents)
+        header.setSectionResizeMode(1, QHeaderView.Interactive)
         self.table.setColumnWidth(1, 145)
-        header.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(8, QHeaderView.Stretch)
         layout.addWidget(self.table, 1)
         return frame
 
@@ -216,13 +217,13 @@ class MainWindow(QMainWindow):
         self.task_table = QTableWidget(0, 3)
         self.task_table.setHorizontalHeaderLabels(["Task", "On", "Status"])
         self.task_table.verticalHeader().setVisible(False)
-        self.task_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
-        self.task_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.task_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.task_table.setSelectionBehavior(QAbstractItemView.SelectRows)
         self.task_table.setAlternatingRowColors(True)
         self.task_table.itemChanged.connect(self.update_task_state_from_table)
-        self.task_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
-        self.task_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
-        self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        self.task_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.Stretch)
+        self.task_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
+        self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         layout.addWidget(self.task_table, 1)
         self.render_selected_instance_tasks()
         return frame
@@ -265,7 +266,7 @@ class MainWindow(QMainWindow):
                     self.table.setCellWidget(row, column, self._build_row_actions(instance.index))
                     continue
                 item = QTableWidgetItem(value)
-                item.setData(Qt.ItemDataRole.UserRole, instance.index)
+                item.setData(Qt.UserRole, instance.index)
                 if column == 1:
                     item.setForeground(QColor("#172033"))
                 if column == 4:
@@ -305,9 +306,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         actions = (
-            (QStyle.StandardPixmap.SP_MediaPlay, "Start", lambda: self._run_instance_action(instance_index, self.provider.start, "started")),
-            (QStyle.StandardPixmap.SP_MediaStop, "Stop", lambda: self._run_instance_action(instance_index, self.provider.stop, "stopped")),
-            (QStyle.StandardPixmap.SP_BrowserReload, "Restart", lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted")),
+            (QStyle.SP_MediaPlay, "Start", lambda: self._run_instance_action(instance_index, self.provider.start, "started")),
+            (QStyle.SP_MediaStop, "Stop", lambda: self._run_instance_action(instance_index, self.provider.stop, "stopped")),
+            (QStyle.SP_BrowserReload, "Restart", lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted")),
         )
         for icon_name, tooltip, callback in actions:
             button = QPushButton()
@@ -339,11 +340,11 @@ class MainWindow(QMainWindow):
         tasks = self.bot_manager.person(instance_index).tasks or []
         if item.row() >= len(tasks):
             return
-        enabled = item.checkState() == Qt.CheckState.Checked
+        enabled = item.checkState() == Qt.Checked
         self.bot_manager.person(instance_index).set_task_enabled(item.row(), enabled)
         self._render_task_table(instance_index)
 
-    def _render_task_table(self, instance_index: int | None) -> None:
+    def _render_task_table(self, instance_index: Optional[int]) -> None:
         if self.task_table is None:
             return
 
@@ -367,8 +368,8 @@ class MainWindow(QMainWindow):
         for row, task in enumerate(tasks):
             task_item = QTableWidgetItem(task.name)
             enabled_item = QTableWidgetItem()
-            enabled_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
-            enabled_item.setCheckState(Qt.CheckState.Checked if task.enabled else Qt.CheckState.Unchecked)
+            enabled_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            enabled_item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked)
             status_item = QTableWidgetItem(task.status)
             status_item.setForeground(QColor("#198754" if task.status == "Idle" else "#69758a"))
             self.task_table.setItem(row, 0, task_item)
@@ -378,7 +379,7 @@ class MainWindow(QMainWindow):
         self._set_bot_metrics(enabled_count, idle_count, error_count)
         self.task_table.blockSignals(False)
 
-    def _task_panel_instance_index(self) -> int | None:
+    def _task_panel_instance_index(self) -> Optional[int]:
         indexes = self.selected_indexes()
         return indexes[0] if indexes else None
 
@@ -404,7 +405,7 @@ class MainWindow(QMainWindow):
 
         self._load_proxy_file(proxy_file)
 
-    def _resolve_proxy_file(self) -> Path | None:
+    def _resolve_proxy_file(self) -> Optional[Path]:
         saved_proxy_file = self._saved_proxy_file()
         if saved_proxy_file is not None:
             return saved_proxy_file
@@ -451,7 +452,7 @@ class MainWindow(QMainWindow):
         self._render_instances()
         self.statusBar().showMessage(f"{summary} from {proxy_file.name}", 5000)
 
-    def _saved_proxy_file(self) -> Path | None:
+    def _saved_proxy_file(self) -> Optional[Path]:
         try:
             value = self.proxy_source_file.read_text(encoding="utf-8").strip()
         except OSError:
@@ -461,7 +462,7 @@ class MainWindow(QMainWindow):
         path = Path(value)
         return path if path.is_file() and path.suffix.lower() == ".txt" else None
 
-    def _discover_proxy_file(self) -> Path | None:
+    def _discover_proxy_file(self) -> Optional[Path]:
         downloads = Path.home() / "Downloads"
         if not downloads.is_dir():
             return None
@@ -519,7 +520,7 @@ class MainWindow(QMainWindow):
         self._render_instances()
         self.statusBar().showMessage(f"Assigned proxies to {len(indexes)} instance(s)", 5000)
 
-    def _choose_proxy_assignment(self, selected_count: int) -> tuple[str | None, ProxyConfig | None]:
+    def _choose_proxy_assignment(self, selected_count: int) -> tuple[Optional[str], Optional[ProxyConfig]]:
         proxy_items = [f"{index + 1}. {proxy.display}" for index, proxy in enumerate(self.proxies)]
         items = proxy_items.copy()
         auto_label = "Auto assign different proxies"
@@ -667,7 +668,7 @@ class MainWindow(QMainWindow):
             return set()
         return instance_pids | ldplayer_related_pids()
 
-    def _instance_by_index(self, instance_index: int) -> EmulatorInstance | None:
+    def _instance_by_index(self, instance_index: int) -> Optional[EmulatorInstance]:
         return next((instance for instance in self.instances if instance.index == instance_index), None)
 
     def _clear_emulator_proxy(self, instance_index: int) -> None:

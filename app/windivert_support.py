@@ -4,7 +4,7 @@ from dataclasses import dataclass
 from importlib.util import find_spec
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class WinDivertStatus:
     available: bool
     message: str

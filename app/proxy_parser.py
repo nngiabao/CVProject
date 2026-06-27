@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 from urllib.parse import urlparse
 
 from app.models import ProxyConfig
@@ -8,7 +9,7 @@ from app.models import ProxyConfig
 SUPPORTED_SCHEMES = {"http", "https", "socks4", "socks4a", "socks5"}
 
 
-def _parse_table_row(value: str, default_scheme: str) -> ProxyConfig | None:
+def _parse_table_row(value: str, default_scheme: str) -> Optional[ProxyConfig]:
     columns = value.replace("\t", " ").split()
     if len(columns) < 2:
         return None
@@ -30,7 +31,7 @@ def _parse_table_row(value: str, default_scheme: str) -> ProxyConfig | None:
     )
 
 
-def _parse_colon_row(value: str, default_scheme: str) -> ProxyConfig | None:
+def _parse_colon_row(value: str, default_scheme: str) -> Optional[ProxyConfig]:
     parts = value.split(":")
     if len(parts) != 4:
         return None

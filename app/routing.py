@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 import select
 import socket
 import threading
@@ -15,7 +16,7 @@ BASE_LISTEN_PORT = 19000
 BUFFER_SIZE = 64 * 1024
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class RoutingSession:
     instance_index: int
     listen_host: str
@@ -48,7 +49,7 @@ class RoutingService:
         for instance_index in list(self._bridges):
             self.stop(instance_index)
 
-    def session(self, instance_index: int) -> RoutingSession | None:
+    def session(self, instance_index: int) -> Optional[RoutingSession]:
         bridge = self._bridges.get(instance_index)
         return bridge.session if bridge else None
 
@@ -60,7 +61,7 @@ class LocalHttpProxyBridge:
     def __init__(self, instance_index: int, listen_host: str, listen_port: int, upstream: ProxyConfig) -> None:
         self.session = RoutingSession(instance_index, listen_host, listen_port, upstream)
         self._stop_event = threading.Event()
-        self._server: socket.socket | None = None
+        self._server: Optional[socket.socket] = None
         self._thread = threading.Thread(target=self._serve, name=f"proxy-bridge-{instance_index}", daemon=True)
 
     def start(self) -> None:
@@ -110,7 +111,7 @@ class LocalHttpProxyBridge:
                 _relay(client, upstream, self._stop_event)
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class SocksConnectRequest:
     atyp: int
     address_bytes: bytes

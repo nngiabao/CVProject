@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 from dataclasses import dataclass
 from enum import Enum
 
@@ -11,23 +12,23 @@ class InstanceState(str, Enum):
     UNKNOWN = "Unknown"
 
 
-@dataclass(slots=True)
+@dataclass
 class EmulatorInstance:
     index: int
     name: str
     state: InstanceState
-    pid: int | None = None
+    pid: Optional[int] = None
     platform: str = "LDPlayer"
-    proxy: str | None = None
+    proxy: Optional[str] = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ProxyConfig:
     scheme: str
     host: str
     port: int
-    username: str | None = None
-    password: str | None = None
+    username: Optional[str] = None
+    password: Optional[str] = None
 
     @property
     def display(self) -> str:

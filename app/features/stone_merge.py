@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -12,7 +13,7 @@ DEFAULT_MATCH_THRESHOLD = 0.88
 DEFAULT_MIN_DISTANCE = 24
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class TemplateMatch:
     template_name: str
     score: float
@@ -26,7 +27,7 @@ class TemplateMatch:
         return self.x + self.width // 2, self.y + self.height // 2
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class MergeCandidate:
     template_name: str
     first: TemplateMatch
@@ -52,7 +53,7 @@ class StoneMergeScanner:
         self.threshold = threshold
         self.min_distance = min_distance
 
-    def find_merge_candidate(self, screenshot_png: bytes) -> MergeCandidate | None:
+    def find_merge_candidate(self, screenshot_png: bytes) -> Optional[MergeCandidate]:
         screenshot = decode_png(screenshot_png)
         matches = self.find_matches(screenshot)
         by_template: dict[str, list[TemplateMatch]] = {}

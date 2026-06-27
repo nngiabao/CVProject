@@ -1,12 +1,13 @@
 from __future__ import annotations
 
+from typing import Optional
 from dataclasses import dataclass
 
 from app.models import EmulatorInstance, ProxyConfig
 from app.routing import RoutingService, RoutingSession
 
 
-@dataclass(slots=True)
+@dataclass
 class BotTask:
     name: str
     enabled: bool = False
@@ -17,13 +18,13 @@ class BotTask:
         self.status = "Idle" if enabled else "Off"
 
 
-@dataclass(slots=True)
+@dataclass
 class BotPerson:
     instance_index: int
-    instance: EmulatorInstance | None = None
-    proxy: ProxyConfig | None = None
-    proxy_check: tuple[str, str] | None = None
-    tasks: list[BotTask] | None = None
+    instance: Optional[EmulatorInstance] = None
+    proxy: Optional[ProxyConfig] = None
+    proxy_check: Optional[tuple[str, str]] = None
+    tasks: Optional[list[BotTask]] = None
 
     def __post_init__(self) -> None:
         if self.tasks is None:
@@ -33,7 +34,7 @@ class BotPerson:
     def assigned(self) -> bool:
         return self.proxy is not None
 
-    def assign_proxy(self, proxy: ProxyConfig, proxy_check: tuple[str, str] | None = None) -> None:
+    def assign_proxy(self, proxy: ProxyConfig, proxy_check: Optional[tuple[str, str]] = None) -> None:
         self.proxy = proxy
         self.proxy_check = proxy_check
 
@@ -80,7 +81,7 @@ class BotManager:
         self,
         instance_index: int,
         proxy: ProxyConfig,
-        proxy_check: tuple[str, str] | None = None,
+        proxy_check: Optional[tuple[str, str]] = None,
     ) -> None:
         self.stop_routing(instance_index)
         self.person(instance_index).assign_proxy(proxy, proxy_check)
@@ -110,7 +111,7 @@ class BotManager:
                 pids.add(instance.pid)
         return pids
 
-    def session(self, instance_index: int) -> RoutingSession | None:
+    def session(self, instance_index: int) -> Optional[RoutingSession]:
         return self.routing.session(instance_index)
 
 

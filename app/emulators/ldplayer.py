@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 import os
 import shutil
 import subprocess
@@ -40,7 +41,7 @@ class LdPlayerProvider(EmulatorProvider):
         return f"LDPlayer ({self.console_path.parent})"
 
     @classmethod
-    def detect(cls) -> LdPlayerProvider | None:
+    def detect(cls) -> Optional[LdPlayerProvider]:
         configured = os.environ.get("LDPLAYER_CONSOLE")
         candidates: list[Path] = []
         if configured:
@@ -167,7 +168,7 @@ class LdPlayerProvider(EmulatorProvider):
         return instances
 
     @classmethod
-    def _is_process_alive(cls, pid: int | None) -> bool:
+    def _is_process_alive(cls, pid: Optional[int]) -> bool:
         if not pid:
             return False
 

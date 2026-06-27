@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from typing import Optional
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -10,11 +11,11 @@ from app.features.stone_merge import MergeCandidate, StoneMergeScanner
 STONE_TEMPLATE_DIR = Path("assets/templates/stones")
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class StoneMergeResult:
     found: bool
     message: str
-    candidate: MergeCandidate | None = None
+    candidate: Optional[MergeCandidate] = None
 
 
 class StoneMergeTaskRunner:
