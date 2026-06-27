@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import json
 from typing import Optional
 from collections.abc import Callable
 from pathlib import Path
@@ -30,7 +31,7 @@ from app.emulators.base import EmulatorProvider
 from app.models import EmulatorInstance, InstanceState, ProxyConfig
 from app.process_utils import ldplayer_related_pids
 from app.proxy_check import check_proxy
-from app.proxy_parser import parse_proxy_text
+from app.proxy_parser import parse_proxy_line, parse_proxy_text
 from app.routing import RoutingService
 from app.windivert_guard import WinDivertGuard
 from app.windivert_support import WinDivertStatus, check_windivert
@@ -41,6 +42,7 @@ class MainWindow(QMainWindow):
         super().__init__()
         self.provider = provider
         self.proxy_source_file = Path.cwd() / ".proxy_source.txt"
+        self.proxy_assignment_file = Path.cwd() / ".proxy_assignments.json"
         self.instances: list[EmulatorInstance] = []
         self.proxies: list[ProxyConfig] = []
         self.proxy_cursor = 0
@@ -57,6 +59,7 @@ class MainWindow(QMainWindow):
         self.resize(1240, 760)
         self.setMinimumSize(980, 620)
         self._build_ui()
+        self._load_proxy_assignments()
         self.refresh_instances()
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(3000)
@@ -341,7 +344,16 @@ class MainWindow(QMainWindow):
         if item.row() >= len(tasks):
             return
         enabled = item.checkState() == Qt.Checked
-        self.bot_manager.person(instance_index).set_task_enabled(item.row(), enabled)
+        person = self.bot_manager.person(instance_index)
+        if enabled and person.proxy is None:
+            QMessageBox.information(
+                self,
+                "Assign proxy first",
+                f"Assign a SOCKS5 proxy to instance {instance_index} before enabling bot tasks.",
+            )
+            self._render_task_table(instance_index)
+            return
+        person.set_task_enabled(item.row(), enabled)
         self._render_task_table(instance_index)
 
     def _render_task_table(self, instance_index: Optional[int]) -> None:
@@ -368,7 +380,10 @@ class MainWindow(QMainWindow):
         for row, task in enumerate(tasks):
             task_item = QTableWidgetItem(task.name)
             enabled_item = QTableWidgetItem()
-            enabled_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            flags = Qt.ItemIsUserCheckable | Qt.ItemIsSelectable
+            if person.proxy is not None:
+                flags |= Qt.ItemIsEnabled
+            enabled_item.setFlags(flags)
             enabled_item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked)
             status_item = QTableWidgetItem(task.status)
             status_item.setForeground(QColor("#198754" if task.status == "Idle" else "#69758a"))
@@ -487,6 +502,7 @@ class MainWindow(QMainWindow):
         self.windivert_guard.stop()
         self.proxy_cursor = 0
         self._set_proxy_summary("SOCKS5 proxies: 0")
+        self._save_proxy_assignments()
         self._render_instances()
 
     def assign_proxies(self) -> None:
@@ -516,9 +532,67 @@ class MainWindow(QMainWindow):
                 self._clear_emulator_proxy(instance_index)
                 self.bot_manager.assign_proxy(instance_index, proxy, self._check_proxy(proxy))
             self.proxy_cursor += len(indexes)
+        self._save_proxy_assignments()
         self._update_windivert_guard()
         self._render_instances()
         self.statusBar().showMessage(f"Assigned proxies to {len(indexes)} instance(s)", 5000)
+
+    def _load_proxy_assignments(self) -> None:
+        try:
+            raw_assignments = json.loads(self.proxy_assignment_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Proxy assignment error", f"Could not load saved assignments: {exc}")
+            return
+        if not isinstance(raw_assignments, dict):
+            QMessageBox.warning(self, "Proxy assignment error", "Saved proxy assignments must be a JSON object.")
+            return
+
+        loaded = 0
+        errors: list[str] = []
+        for instance_key, proxy_url in raw_assignments.items():
+            try:
+                instance_index = int(instance_key)
+            except (TypeError, ValueError):
+                errors.append(f"{instance_key}: invalid instance index")
+                continue
+            if not isinstance(proxy_url, str):
+                errors.append(f"Instance {instance_index}: proxy must be text")
+                continue
+            try:
+                proxy = parse_proxy_line(proxy_url, "socks5")
+            except (ValueError, TypeError) as exc:
+                errors.append(f"Instance {instance_index}: {exc}")
+                continue
+            if proxy.scheme != "socks5":
+                errors.append(f"Instance {instance_index}: only SOCKS5 proxies are supported")
+                continue
+            self.bot_manager.assign_proxy(instance_index, proxy)
+            loaded += 1
+
+        if loaded:
+            self._set_proxy_summary(f"Saved assignments: {loaded}")
+            self.statusBar().showMessage(f"Loaded {loaded} saved proxy assignment(s)", 5000)
+        if errors:
+            QMessageBox.warning(self, "Some saved assignments were skipped", "\n".join(errors[:10]))
+
+    def _save_proxy_assignments(self) -> None:
+        assignments = {
+            str(instance_index): person.proxy.connection_url
+            for instance_index, person in sorted(self.bot_manager.people.items())
+            if person.proxy is not None
+        }
+        try:
+            if assignments:
+                self.proxy_assignment_file.write_text(
+                    json.dumps(assignments, indent=2, sort_keys=True),
+                    encoding="utf-8",
+                )
+            elif self.proxy_assignment_file.exists():
+                self.proxy_assignment_file.unlink()
+        except OSError as exc:
+            QMessageBox.warning(self, "Proxy assignment error", f"Could not save assignments: {exc}")
 
     def _choose_proxy_assignment(self, selected_count: int) -> tuple[Optional[str], Optional[ProxyConfig]]:
         proxy_items = [f"{index + 1}. {proxy.display}" for index, proxy in enumerate(self.proxies)]

@@ -18,14 +18,22 @@ class LdPlayerProvider(EmulatorProvider):
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
     COMMON_PATHS = (
+        Path(r"C:\LDPlayer\LDPlayer\dnconsole.exe"),
+        Path(r"C:\LDPlayer\LDPlayer\ldconsole.exe"),
         Path(r"C:\LDPlayer\LDPlayer9\dnconsole.exe"),
         Path(r"C:\LDPlayer\LDPlayer9\ldconsole.exe"),
         Path(r"C:\LDPlayer\LDPlayer4.0\dnconsole.exe"),
         Path(r"C:\LDPlayer\LDPlayer4.0\ldconsole.exe"),
+        Path(r"C:\Program Files\LDPlayer\LDPlayer\dnconsole.exe"),
+        Path(r"C:\Program Files\LDPlayer\LDPlayer\ldconsole.exe"),
         Path(r"C:\Program Files\LDPlayer\LDPlayer9\dnconsole.exe"),
         Path(r"C:\Program Files\LDPlayer\LDPlayer9\ldconsole.exe"),
+        Path(r"C:\Program Files (x86)\LDPlayer\LDPlayer\dnconsole.exe"),
+        Path(r"C:\Program Files (x86)\LDPlayer\LDPlayer\ldconsole.exe"),
         Path(r"C:\Program Files (x86)\LDPlayer\LDPlayer9\dnconsole.exe"),
         Path(r"C:\Program Files (x86)\LDPlayer\LDPlayer9\ldconsole.exe"),
+        Path(r"C:\LDPlayer\dnconsole.exe"),
+        Path(r"C:\LDPlayer\ldconsole.exe"),
         Path(r"C:\Program Files\dnplayerext2\dnconsole.exe"),
     )
     UNINSTALL_REGISTRY_PATHS = (
@@ -45,7 +53,9 @@ class LdPlayerProvider(EmulatorProvider):
         configured = os.environ.get("LDPLAYER_CONSOLE")
         candidates: list[Path] = []
         if configured:
-            candidates.append(Path(configured))
+            configured_path = Path(configured)
+            if configured_path.is_file():
+                return cls(configured_path)
 
         for executable_name in ("dnconsole.exe", "ldconsole.exe"):
             executable = shutil.which(executable_name)
@@ -55,6 +65,7 @@ class LdPlayerProvider(EmulatorProvider):
         candidates.extend(cls.COMMON_PATHS)
         candidates.extend(cls._registry_candidates())
 
+        existing: list[Path] = []
         seen: set[str] = set()
         for candidate in candidates:
             normalized = os.path.normcase(os.path.abspath(candidate))
@@ -62,8 +73,41 @@ class LdPlayerProvider(EmulatorProvider):
                 continue
             seen.add(normalized)
             if candidate.is_file():
-                return cls(candidate)
-        return None
+                existing.append(candidate)
+        if not existing:
+            return None
+
+        scored = [(cls._instance_count(candidate), candidate) for candidate in existing]
+        scored.sort(key=lambda item: item[0], reverse=True)
+        return cls(scored[0][1])
+
+    @classmethod
+    def _instance_count(cls, console_path: Path) -> int:
+        try:
+            result = subprocess.run(
+                [str(console_path), "list2"],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=10,
+            )
+        except Exception:
+            return 0
+        if result.returncode != 0:
+            return 0
+        return sum(1 for line in result.stdout.splitlines() if cls._line_has_instance_index(line))
+
+    @staticmethod
+    def _line_has_instance_index(line: str) -> bool:
+        first_field = line.split(",", 1)[0].strip()
+        try:
+            int(first_field)
+        except ValueError:
+            return False
+        return True
 
     @classmethod
     def _registry_candidates(cls) -> list[Path]:
@@ -140,14 +184,15 @@ class LdPlayerProvider(EmulatorProvider):
         instances: list[EmulatorInstance] = []
         for line in output.splitlines():
             fields = [field.strip() for field in line.split(",")]
-            if len(fields) < 6:
+            if len(fields) < 2:
                 continue
             try:
                 index = int(fields[0])
-                android_started = fields[4] == "1"
-                pid = int(fields[5]) or None
             except ValueError:
                 continue
+
+            pid = self._running_pid_from_fields(fields)
+            android_started = self._android_started_from_fields(fields, pid)
             process_alive = self._is_process_alive(pid)
             if android_started and process_alive:
                 state = InstanceState.RUNNING
@@ -166,6 +211,28 @@ class LdPlayerProvider(EmulatorProvider):
                 )
             )
         return instances
+
+    @classmethod
+    def _running_pid_from_fields(cls, fields: list[str]) -> Optional[int]:
+        possible_pids: list[int] = []
+        for field in fields[4:]:
+            try:
+                value = int(field)
+            except ValueError:
+                continue
+            if value > 0:
+                possible_pids.append(value)
+
+        for pid in reversed(possible_pids):
+            if cls._is_process_alive(pid):
+                return pid
+        return None
+
+    @staticmethod
+    def _android_started_from_fields(fields: list[str], pid: Optional[int]) -> bool:
+        if pid is not None:
+            return True
+        return any(field == "1" for field in fields[4:])
 
     @classmethod
     def _is_process_alive(cls, pid: Optional[int]) -> bool:

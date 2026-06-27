@@ -41,6 +41,8 @@ class BotPerson:
     def clear_proxy(self) -> None:
         self.proxy = None
         self.proxy_check = None
+        for task in self.tasks or []:
+            task.set_enabled(False)
 
     def set_task_enabled(self, row: int, enabled: bool) -> None:
         if self.tasks is None or row >= len(self.tasks):
@@ -117,7 +119,7 @@ class BotManager:
 
 def default_tasks() -> list[BotTask]:
     return [
-        BotTask("Warmup", True, "Idle"),
+        BotTask("Warmup"),
         BotTask("Merge stones"),
         BotTask("Daily cycle"),
         BotTask("Inventory"),

@@ -5,3 +5,4 @@ build/
 dist/
 *.log
 .proxy_source.txt
+.proxy_assignments.json

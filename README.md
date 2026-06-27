@@ -42,6 +42,10 @@ The app remembers the selected proxy text file in `.proxy_source.txt`. If that
 file is missing, it looks for a Webshare text file in Downloads before opening
 the file picker.
 
+Proxy assignments are saved by LDPlayer instance index in `.proxy_assignments.json`
+and loaded automatically on startup. Bot tasks stay disabled until the selected
+instance has an assigned SOCKS5 proxy.
+
 ## Routing workflow
 
 Use **Start proxy routing** after assigning proxies to selected instances. The
