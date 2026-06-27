@@ -66,3 +66,10 @@ When **Start proxy routing** is used on running LDPlayer instances and WinDivert
 is available, the app enables a kill switch for those instance PIDs. Direct
 public TCP/UDP traffic from protected LDPlayer processes is blocked so the
 instance cannot fall back to the real connection while routing is active.
+
+## Bot model
+
+The UI is backed by a small object model in `app/bot.py`. `BotManager` owns one
+`BotPerson` per emulator instance. Each person keeps its assigned proxy, proxy
+check result, routing session, and independent task list. The right-side task
+panel displays and edits the selected person's tasks.

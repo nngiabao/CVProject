@@ -16,12 +16,15 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QSplitter,
+    QStyle,
     QTableWidget,
     QTableWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
 from app.models import EmulatorInstance, InstanceState, ProxyConfig
 from app.process_utils import ldplayer_related_pids
@@ -39,15 +42,17 @@ class MainWindow(QMainWindow):
         self.proxy_source_file = Path.cwd() / ".proxy_source.txt"
         self.instances: list[EmulatorInstance] = []
         self.proxies: list[ProxyConfig] = []
-        self.assignments: dict[int, ProxyConfig] = {}
         self.proxy_cursor = 0
-        self.proxy_checks: dict[int, tuple[str, str]] = {}
         self.routing = RoutingService()
+        self.bot_manager = BotManager(self.routing)
         self.windivert_guard = WinDivertGuard()
         self.windivert_status: WinDivertStatus = check_windivert()
         self.proxy_summary: QLabel | None = None
+        self.bot_heading: QLabel | None = None
+        self.bot_metrics: list[QLabel] = []
+        self.task_table: QTableWidget | None = None
 
-        self.setWindowTitle("Emulator Proxy Manager")
+        self.setWindowTitle("GrowStone Bot")
         self.resize(1240, 760)
         self.setMinimumSize(980, 620)
         self._build_ui()
@@ -127,14 +132,6 @@ class MainWindow(QMainWindow):
         assign.clicked.connect(self.assign_proxies)
         check = QPushButton("Check selected proxies")
         check.clicked.connect(self.check_selected_proxies)
-        start = QPushButton("Start")
-        start.setObjectName("success")
-        start.clicked.connect(lambda: self._run_selected(self.provider.start, "started"))
-        stop = QPushButton("Stop")
-        stop.setObjectName("danger")
-        stop.clicked.connect(lambda: self._run_selected(self.provider.stop, "stopped"))
-        restart = QPushButton("Restart")
-        restart.clicked.connect(lambda: self._run_selected(self.provider.restart, "restarted"))
         route = QPushButton("Start proxy routing")
         route.setToolTip("Starts local authenticated SOCKS5 bridges for selected assigned instances")
         route.clicked.connect(self.start_proxy_routing)
@@ -144,13 +141,18 @@ class MainWindow(QMainWindow):
         for button in (select_all, clear, load, clear_proxies, assign, check):
             layout.addWidget(button)
         layout.addWidget(self.proxy_summary)
-        for button in (start, stop, restart, route, stop_route):
+        for button in (route, stop_route):
             layout.addWidget(button)
         layout.addStretch()
         return frame
 
     def _build_content(self) -> QWidget:
-        return self._build_instance_panel()
+        splitter = QSplitter(Qt.Orientation.Horizontal)
+        splitter.addWidget(self._build_instance_panel())
+        splitter.addWidget(self._build_bot_panel())
+        splitter.setSizes([620, 620])
+        splitter.setChildrenCollapsible(False)
+        return splitter
 
     def _build_instance_panel(self) -> QWidget:
         frame = QFrame()
@@ -165,8 +167,8 @@ class MainWindow(QMainWindow):
         self.table.setHorizontalHeaderLabels(
             [
                 "#",
-                "Platform",
                 "Instance",
+                "",
                 "PID",
                 "State",
                 "Proxy status",
@@ -180,11 +182,49 @@ class MainWindow(QMainWindow):
         self.table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         self.table.setAlternatingRowColors(True)
         self.table.verticalHeader().setVisible(False)
+        self.table.itemSelectionChanged.connect(self.render_selected_instance_tasks)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
-        header.setSectionResizeMode(2, QHeaderView.ResizeMode.Stretch)
+        header.setSectionResizeMode(1, QHeaderView.ResizeMode.Interactive)
+        self.table.setColumnWidth(1, 145)
         header.setSectionResizeMode(8, QHeaderView.ResizeMode.Stretch)
         layout.addWidget(self.table, 1)
+        return frame
+
+    def _build_bot_panel(self) -> QWidget:
+        frame = QFrame()
+        frame.setObjectName("panel")
+        layout = QVBoxLayout(frame)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(10)
+
+        self.bot_heading = QLabel("Bot tasks")
+        heading = self.bot_heading
+        heading.setObjectName("metric")
+        layout.addWidget(heading)
+
+        metrics = QHBoxLayout()
+        self.bot_metrics = []
+        for text in ("Enabled: 0", "Idle: 0", "Errors: 0"):
+            label = QLabel(text)
+            label.setObjectName("metric")
+            metrics.addWidget(label)
+            self.bot_metrics.append(label)
+        metrics.addStretch()
+        layout.addLayout(metrics)
+
+        self.task_table = QTableWidget(0, 3)
+        self.task_table.setHorizontalHeaderLabels(["Task", "On", "Status"])
+        self.task_table.verticalHeader().setVisible(False)
+        self.task_table.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.task_table.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        self.task_table.setAlternatingRowColors(True)
+        self.task_table.itemChanged.connect(self.update_task_state_from_table)
+        self.task_table.horizontalHeader().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.task_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeMode.ResizeToContents)
+        self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeMode.ResizeToContents)
+        layout.addWidget(self.task_table, 1)
+        self.render_selected_instance_tasks()
         return frame
 
     def refresh_instances(self) -> None:
@@ -194,10 +234,11 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, "LDPlayer error", str(exc))
             return
 
-        for instance in fresh_instances:
-            assigned = self.assignments.get(instance.index)
-            instance.proxy = assigned.display if assigned else None
         self.instances = fresh_instances
+        self.bot_manager.sync_instances(self.instances)
+        for instance in self.instances:
+            assigned = self.bot_manager.person(instance.index).proxy
+            instance.proxy = assigned.display if assigned else None
         self._update_windivert_guard()
         self._render_instances()
         self.statusBar().showMessage(self.provider.display_name)
@@ -205,54 +246,146 @@ class MainWindow(QMainWindow):
     def _render_instances(self) -> None:
         self.table.setRowCount(len(self.instances))
         for row, instance in enumerate(self.instances):
-            assigned = self.assignments.get(instance.index)
-            route = self.routing.session(instance.index)
+            person = self.bot_manager.person(instance.index)
+            assigned = person.proxy
+            route = self.bot_manager.session(instance.index)
             values = (
                 str(instance.index),
-                instance.platform,
                 instance.name,
+                "",
                 str(instance.pid or "—"),
                 instance.state.value,
                 "Assigned" if assigned else "Unassigned",
-                self.proxy_checks.get(instance.index, ("Not checked", "—"))[0] if assigned else "—",
-                self.proxy_checks.get(instance.index, ("Not checked", "—"))[1] if assigned else "—",
+                person.proxy_check[0] if assigned and person.proxy_check else "Not checked" if assigned else "—",
+                person.proxy_check[1] if assigned and person.proxy_check else "—",
                 route.local_proxy if route else "Off",
             )
             for column, value in enumerate(values):
+                if column == 2:
+                    self.table.setCellWidget(row, column, self._build_row_actions(instance.index))
+                    continue
                 item = QTableWidgetItem(value)
                 item.setData(Qt.ItemDataRole.UserRole, instance.index)
-                if column == 2:
-                    item.setForeground(QColor("#ffffff"))
+                if column == 1:
+                    item.setForeground(QColor("#172033"))
                 if column == 4:
                     state_colors = {
-                        InstanceState.RUNNING: "#43cf78",
-                        InstanceState.STARTING: "#f0b84b",
-                        InstanceState.STOPPED: "#8f97ad",
-                        InstanceState.UNKNOWN: "#ef6c72",
+                        InstanceState.RUNNING: "#198754",
+                        InstanceState.STARTING: "#b7791f",
+                        InstanceState.STOPPED: "#69758a",
+                        InstanceState.UNKNOWN: "#d64550",
                     }
                     color = state_colors[instance.state]
                     item.setForeground(QColor(color))
                 if column == 5:
-                    item.setForeground(QColor("#a787ff" if assigned else "#8f97ad"))
+                    item.setForeground(QColor("#4169e1" if assigned else "#69758a"))
                 if column == 6:
                     running_colors = {
-                        "Running": "#43cf78",
-                        "Not running": "#ef6c72",
-                        "Auth failed": "#ef6c72",
-                        "Not checked": "#f0b84b",
+                        "Running": "#198754",
+                        "Not running": "#d64550",
+                        "Auth failed": "#d64550",
+                        "Not checked": "#b7791f",
                     }
-                    item.setForeground(QColor(running_colors.get(value, "#8f97ad")))
+                    item.setForeground(QColor(running_colors.get(value, "#69758a")))
                 if column == 8:
-                    item.setForeground(QColor("#43cf78" if route else "#8f97ad"))
+                    item.setForeground(QColor("#198754" if route else "#69758a"))
                 self.table.setItem(row, column, item)
 
         running = sum(item.state == InstanceState.RUNNING for item in self.instances)
         self.total_metric.setText(f"Total: {len(self.instances)}")
         self.running_metric.setText(f"Running: {running}")
-        self.assigned_metric.setText(f"Assigned: {len(self.assignments)}")
+        self.assigned_metric.setText(f"Assigned: {self.bot_manager.assigned_count()}")
         self.protection_metric.setText(self._protection_label())
         guard_stats = self.windivert_guard.stats
         self.guard_metric.setText(f"Guard: {guard_stats.protected_pids} PIDs / {guard_stats.blocked} blocked")
+
+    def _build_row_actions(self, instance_index: int) -> QWidget:
+        widget = QWidget()
+        layout = QHBoxLayout(widget)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(4)
+        actions = (
+            (QStyle.StandardPixmap.SP_MediaPlay, "Start", lambda: self._run_instance_action(instance_index, self.provider.start, "started")),
+            (QStyle.StandardPixmap.SP_MediaStop, "Stop", lambda: self._run_instance_action(instance_index, self.provider.stop, "stopped")),
+            (QStyle.StandardPixmap.SP_BrowserReload, "Restart", lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted")),
+        )
+        for icon_name, tooltip, callback in actions:
+            button = QPushButton()
+            button.setObjectName("iconButton")
+            button.setIcon(self.style().standardIcon(icon_name))
+            button.setToolTip(tooltip)
+            button.setFixedSize(28, 28)
+            button.clicked.connect(callback)
+            layout.addWidget(button)
+        layout.addStretch()
+        return widget
+
+    def render_selected_instance_tasks(self) -> None:
+        if self.task_table is None:
+            return
+
+        indexes = self.selected_indexes()
+        if not indexes:
+            self._render_task_table(None)
+            return
+        self._render_task_table(indexes[0])
+
+    def update_task_state_from_table(self, item: QTableWidgetItem) -> None:
+        if item.column() != 1:
+            return
+        instance_index = self._task_panel_instance_index()
+        if instance_index is None:
+            return
+        tasks = self.bot_manager.person(instance_index).tasks or []
+        if item.row() >= len(tasks):
+            return
+        enabled = item.checkState() == Qt.CheckState.Checked
+        self.bot_manager.person(instance_index).set_task_enabled(item.row(), enabled)
+        self._render_task_table(instance_index)
+
+    def _render_task_table(self, instance_index: int | None) -> None:
+        if self.task_table is None:
+            return
+
+        self.task_table.blockSignals(True)
+        if instance_index is None:
+            self.task_table.setRowCount(0)
+            if self.bot_heading is not None:
+                self.bot_heading.setText("Bot tasks")
+            self._set_bot_metrics(0, 0, 0)
+            self.task_table.blockSignals(False)
+            return
+
+        instance = self._instance_by_index(instance_index)
+        title = instance.name if instance is not None else f"Instance {instance_index}"
+        if self.bot_heading is not None:
+            self.bot_heading.setText(f"Bot tasks - {title}")
+
+        person = self.bot_manager.person(instance_index)
+        tasks = person.tasks or []
+        self.task_table.setRowCount(len(tasks))
+        for row, task in enumerate(tasks):
+            task_item = QTableWidgetItem(task.name)
+            enabled_item = QTableWidgetItem()
+            enabled_item.setFlags(Qt.ItemFlag.ItemIsUserCheckable | Qt.ItemFlag.ItemIsEnabled | Qt.ItemFlag.ItemIsSelectable)
+            enabled_item.setCheckState(Qt.CheckState.Checked if task.enabled else Qt.CheckState.Unchecked)
+            status_item = QTableWidgetItem(task.status)
+            status_item.setForeground(QColor("#198754" if task.status == "Idle" else "#69758a"))
+            self.task_table.setItem(row, 0, task_item)
+            self.task_table.setItem(row, 1, enabled_item)
+            self.task_table.setItem(row, 2, status_item)
+        enabled_count, idle_count, error_count = person.task_counts()
+        self._set_bot_metrics(enabled_count, idle_count, error_count)
+        self.task_table.blockSignals(False)
+
+    def _task_panel_instance_index(self) -> int | None:
+        indexes = self.selected_indexes()
+        return indexes[0] if indexes else None
+
+    def _set_bot_metrics(self, enabled: int, idle: int, errors: int) -> None:
+        values = (f"Enabled: {enabled}", f"Idle: {idle}", f"Errors: {errors}")
+        for label, value in zip(self.bot_metrics, values):
+            label.setText(value)
 
     def table_select_all(self) -> None:
         self.table.selectAll()
@@ -310,7 +443,6 @@ class MainWindow(QMainWindow):
             proxies.append(proxy)
         self.proxies = proxies
         self.proxy_cursor = 0
-        self.proxy_checks.clear()
         summary = f"SOCKS5 proxies: {len(proxies)}"
         if errors:
             summary += f" · Invalid: {len(errors)}"
@@ -350,10 +482,8 @@ class MainWindow(QMainWindow):
     def clear_proxies(self) -> None:
         self._clear_all_emulator_proxies()
         self.proxies.clear()
-        self.assignments.clear()
-        self.proxy_checks.clear()
+        self.bot_manager.clear_all_proxies()
         self.windivert_guard.stop()
-        self.routing.stop_all()
         self.proxy_cursor = 0
         self._set_proxy_summary("SOCKS5 proxies: 0")
         self._render_instances()
@@ -377,17 +507,13 @@ class MainWindow(QMainWindow):
                 return
             for instance_index in indexes:
                 self._clear_emulator_proxy(instance_index)
-                self.routing.stop(instance_index)
-                self.assignments[instance_index] = proxy
-                self.proxy_checks[instance_index] = self._check_proxy(proxy)
+                self.bot_manager.assign_proxy(instance_index, proxy, self._check_proxy(proxy))
         else:
             for position, instance_index in enumerate(indexes):
                 proxy_index = (self.proxy_cursor + position) % len(self.proxies)
                 proxy = self.proxies[proxy_index]
                 self._clear_emulator_proxy(instance_index)
-                self.routing.stop(instance_index)
-                self.assignments[instance_index] = proxy
-                self.proxy_checks[instance_index] = self._check_proxy(proxy)
+                self.bot_manager.assign_proxy(instance_index, proxy, self._check_proxy(proxy))
             self.proxy_cursor += len(indexes)
         self._update_windivert_guard()
         self._render_instances()
@@ -426,7 +552,8 @@ class MainWindow(QMainWindow):
         applied_routes: list[str] = []
         started = 0
         for instance_index in indexes:
-            proxy = self.assignments.get(instance_index)
+            person = self.bot_manager.person(instance_index)
+            proxy = person.proxy
             if proxy is None:
                 failures.append(f"Instance {instance_index}: assign a proxy first")
                 continue
@@ -435,17 +562,17 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection")
                 continue
             status, proxy_ip = self._check_proxy(proxy)
-            self.proxy_checks[instance_index] = (status, proxy_ip)
+            person.proxy_check = (status, proxy_ip)
             if status != "Running":
                 failures.append(f"Instance {instance_index}: proxy check failed ({status})")
                 continue
             try:
-                session = self.routing.start(instance_index, proxy)
+                session = self.bot_manager.start_routing(instance_index)
                 applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
                 applied_routes.append(f"Instance {instance_index}: {applied_proxy}")
                 started += 1
             except Exception as exc:
-                self.routing.stop(instance_index)
+                self.bot_manager.stop_routing(instance_index)
                 failures.append(f"Instance {instance_index}: {exc}")
 
         self._update_windivert_guard()
@@ -462,7 +589,7 @@ class MainWindow(QMainWindow):
             return
 
         for instance_index in indexes:
-            self.routing.stop(instance_index)
+            self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)
         self._update_windivert_guard()
         self._render_instances()
@@ -476,10 +603,11 @@ class MainWindow(QMainWindow):
 
         checked = 0
         for instance_index in indexes:
-            proxy = self.assignments.get(instance_index)
+            person = self.bot_manager.person(instance_index)
+            proxy = person.proxy
             if not proxy:
                 continue
-            self.proxy_checks[instance_index] = self._check_proxy(proxy)
+            person.proxy_check = self._check_proxy(proxy)
             checked += 1
         self._render_instances()
         self.statusBar().showMessage(f"Checked {checked} assigned proxy/proxies", 5000)
@@ -534,12 +662,7 @@ class MainWindow(QMainWindow):
             self.windivert_guard.start(pids)
 
     def _active_routed_pids(self) -> set[int]:
-        routed_indexes = set(self.routing.sessions())
-        instance_pids = {
-            instance.pid
-            for instance in self.instances
-            if instance.index in routed_indexes and instance.pid is not None
-        }
+        instance_pids = self.bot_manager.routed_pids()
         if not instance_pids:
             return set()
         return instance_pids | ldplayer_related_pids()
@@ -554,7 +677,7 @@ class MainWindow(QMainWindow):
             pass
 
     def _clear_all_emulator_proxies(self) -> None:
-        for instance_index in list(self.routing.sessions()):
+        for instance_index in list(self.bot_manager.routed_indexes()):
             self._clear_emulator_proxy(instance_index)
 
     def _set_proxy_summary(self, text: str) -> None:
@@ -580,8 +703,17 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"{len(indexes)} instance(s) {verb}", 5000)
 
+    def _run_instance_action(self, instance_index: int, action: Callable[[int], None], verb: str) -> None:
+        try:
+            action(instance_index)
+        except Exception as exc:
+            QMessageBox.warning(self, "Instance action failed", f"Instance {instance_index}: {exc}")
+            return
+        self.refresh_instances()
+        self.statusBar().showMessage(f"Instance {instance_index} {verb}", 5000)
+
     def closeEvent(self, event: QCloseEvent) -> None:
         self._clear_all_emulator_proxies()
         self.windivert_guard.stop()
-        self.routing.stop_all()
+        self.bot_manager.clear_all_proxies()
         super().closeEvent(event)
