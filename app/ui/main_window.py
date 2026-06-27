@@ -309,9 +309,17 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(4)
         actions = (
-            (QStyle.SP_MediaPlay, "Start", lambda: self._run_instance_action(instance_index, self.provider.start, "started")),
+            (
+                QStyle.SP_MediaPlay,
+                "Start",
+                lambda: self._run_instance_action(instance_index, self.provider.start, "started", apply_saved_proxy=True),
+            ),
             (QStyle.SP_MediaStop, "Stop", lambda: self._run_instance_action(instance_index, self.provider.stop, "stopped")),
-            (QStyle.SP_BrowserReload, "Restart", lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted")),
+            (
+                QStyle.SP_BrowserReload,
+                "Restart",
+                lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted", apply_saved_proxy=True),
+            ),
         )
         for icon_name, tooltip, callback in actions:
             button = QPushButton()
@@ -778,14 +786,61 @@ class MainWindow(QMainWindow):
         else:
             self.statusBar().showMessage(f"{len(indexes)} instance(s) {verb}", 5000)
 
-    def _run_instance_action(self, instance_index: int, action: Callable[[int], None], verb: str) -> None:
+    def _run_instance_action(
+        self,
+        instance_index: int,
+        action: Callable[[int], None],
+        verb: str,
+        apply_saved_proxy: bool = False,
+    ) -> None:
         try:
             action(instance_index)
         except Exception as exc:
             QMessageBox.warning(self, "Instance action failed", f"Instance {instance_index}: {exc}")
             return
         self.refresh_instances()
+        if apply_saved_proxy and self._apply_saved_proxy_routing(instance_index):
+            return
         self.statusBar().showMessage(f"Instance {instance_index} {verb}", 5000)
+
+    def _apply_saved_proxy_routing(self, instance_index: int) -> bool:
+        person = self.bot_manager.person(instance_index)
+        proxy = person.proxy
+        if proxy is None:
+            return False
+
+        status, proxy_ip = self._check_proxy(proxy)
+        person.proxy_check = (status, proxy_ip)
+        if status != "Running":
+            self._render_instances()
+            QMessageBox.warning(
+                self,
+                "Saved proxy failed",
+                f"Instance {instance_index} has a saved proxy, but the proxy check failed ({status}).",
+            )
+            return True
+
+        try:
+            session = self.bot_manager.start_routing(instance_index)
+            applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
+        except Exception as exc:
+            self.bot_manager.stop_routing(instance_index)
+            self._render_instances()
+            QMessageBox.warning(
+                self,
+                "Saved proxy routing failed",
+                f"Instance {instance_index}: {exc}",
+            )
+            return True
+
+        self.refresh_instances()
+        self._update_windivert_guard()
+        self._render_instances()
+        self.statusBar().showMessage(
+            f"Instance {instance_index} started with saved proxy route {applied_proxy}",
+            5000,
+        )
+        return True
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._clear_all_emulator_proxies()
