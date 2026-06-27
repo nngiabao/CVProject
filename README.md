@@ -73,3 +73,13 @@ The UI is backed by a small object model in `app/bot.py`. `BotManager` owns one
 `BotPerson` per emulator instance. Each person keeps its assigned proxy, proxy
 check result, routing session, and independent task list. The right-side task
 panel displays and edits the selected person's tasks.
+
+## Stone merge feature
+
+The first bot feature is template-based stone detection. Put cropped stone
+template images in `assets/templates/stones/`. The scanner captures the emulator
+screen, searches only the bottom third of the 720x1080 screen, and returns drag
+coordinates when it finds two matching stones of the same template.
+
+This first version detects the merge candidate; the next step is executing the
+drag through ADB input once the real stone template image is available.

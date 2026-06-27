@@ -117,6 +117,7 @@ class BotManager:
 def default_tasks() -> list[BotTask]:
     return [
         BotTask("Warmup", True, "Idle"),
+        BotTask("Merge stones"),
         BotTask("Daily cycle"),
         BotTask("Inventory"),
         BotTask("Collect resources"),

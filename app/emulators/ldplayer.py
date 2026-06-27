@@ -120,6 +120,20 @@ class LdPlayerProvider(EmulatorProvider):
             raise RuntimeError(message)
         return result.stdout.strip()
 
+    def _run_bytes(self, *arguments: str) -> bytes:
+        result = subprocess.run(
+            [str(self.console_path), *arguments],
+            check=False,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=20,
+        )
+        if result.returncode != 0:
+            message = result.stderr.decode("utf-8", errors="replace").strip()
+            message = message or result.stdout.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(message or "LDPlayer command failed")
+        return result.stdout
+
     def list_instances(self) -> list[EmulatorInstance]:
         output = self._run("list2")
         instances: list[EmulatorInstance] = []
@@ -213,6 +227,10 @@ class LdPlayerProvider(EmulatorProvider):
 
     def _adb(self, index: int, command: str) -> str:
         return self._run("adb", "--index", str(index), "--command", command)
+
+    def screenshot_png(self, index: int) -> bytes:
+        self._wait_for_adb(index, timeout=10)
+        return self._run_bytes("adb", "--index", str(index), "--command", "exec-out screencap -p")
 
     def _wait_for_adb(self, index: int, timeout: int = 45) -> None:
         deadline = time.monotonic() + timeout

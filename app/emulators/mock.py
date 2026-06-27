@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import base64
+
 from app.emulators.base import EmulatorProvider
 from app.models import EmulatorInstance, InstanceState
 
@@ -58,6 +60,11 @@ class MockEmulatorProvider(EmulatorProvider):
 
     def get_http_proxy(self, index: int) -> str:
         return self._find(index).proxy or ""
+
+    def screenshot_png(self, index: int) -> bytes:
+        return base64.b64decode(
+            "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAGjChXjAAAAAElFTkSuQmCC"
+        )
 
     def _find(self, index: int) -> EmulatorInstance:
         return next(item for item in self._instances if item.index == index)
