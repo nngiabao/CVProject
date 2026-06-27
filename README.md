@@ -8,6 +8,10 @@ workflow in a later phase.
 
 ## Run
 
+Use 64-bit Python 3.10 for the Windows 10 compatibility dependency set. The
+requirements are pinned to older wheels so the app does not pull the newest Qt,
+NumPy, or OpenCV builds.
+
 ```powershell
 python -m pip install -r requirements.txt
 python main.py
