@@ -675,19 +675,18 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Proxy assignment error", f"Could not save assignments: {exc}")
 
     def _assignment_key(self, instance_index: int) -> Optional[str]:
-        instance = self._instance_by_index(instance_index)
-        if instance is not None and instance.identity:
-            return instance.identity
         return str(instance_index)
 
     def _instance_index_for_assignment_key(self, key: object) -> Optional[int]:
         if isinstance(key, str):
-            for instance in self.instances:
-                if instance.identity == key:
-                    return instance.index
             try:
                 return int(key)
             except ValueError:
+                if key.startswith("ldplayer:"):
+                    try:
+                        return int(key.rsplit(":", 1)[1])
+                    except (IndexError, ValueError):
+                        return None
                 return None
         if isinstance(key, int):
             return key
@@ -853,9 +852,6 @@ class MainWindow(QMainWindow):
         return next((instance for instance in self.instances if instance.index == instance_index), None)
 
     def _display_instance_index(self, instance: EmulatorInstance) -> str:
-        local_index = instance.index % 10000
-        if instance.index >= 10000:
-            return f"{instance.platform}:{local_index}"
         return str(instance.index)
 
     def _clear_emulator_proxy(self, instance_index: int) -> Optional[str]:

@@ -26,12 +26,12 @@ class MockEmulatorProvider(EmulatorProvider):
     def list_instances(self) -> list[EmulatorInstance]:
         return [
             EmulatorInstance(
-                item.index,
-                item.name,
-                item.state,
-                item.pid,
-                item.platform,
-                item.proxy,
+                index=item.index,
+                name=item.name,
+                state=item.state,
+                pid=item.pid,
+                platform=item.platform,
+                proxy=item.proxy,
             )
             for item in self._instances
         ]
