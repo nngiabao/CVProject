@@ -11,7 +11,7 @@ class InstanceState(str, Enum):
     UNKNOWN = "Unknown"
 
 
-@dataclass(slots=True)
+@dataclass
 class EmulatorInstance:
     index: int
     name: str
@@ -21,7 +21,7 @@ class EmulatorInstance:
     proxy: str | None = None
 
 
-@dataclass(frozen=True, slots=True)
+@dataclass(frozen=True)
 class ProxyConfig:
     scheme: str
     host: str
