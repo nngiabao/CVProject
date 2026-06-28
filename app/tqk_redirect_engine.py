@@ -29,6 +29,7 @@ class TqkRedirectEngine:
         self.project_root = project_root
         self._processes: dict[int, subprocess.Popen[str]] = {}
         self._instance_pids: dict[int, set[int]] = {}
+        self._proxy_keys: dict[int, str] = {}
         self._last_error: Optional[str] = None
         self._log_dir = project_root / "tools" / "tqk_redirector" / "logs"
 
@@ -64,8 +65,11 @@ class TqkRedirectEngine:
         return TqkRedirectStatus(True, f"Tqk redirector ready: {' '.join(command)}")
 
     def start(self, instance_index: int, pid: int, proxy: ProxyConfig) -> None:
+        proxy_key = proxy.connection_url
         current = self._processes.get(pid)
         if current is not None and current.poll() is None:
+            if self._proxy_keys.get(pid) != proxy_key:
+                raise RuntimeError(f"PID {pid} is already routed by another proxy")
             self._instance_pids.setdefault(instance_index, set()).add(pid)
             return
         self._stop_pid(pid)
@@ -111,6 +115,7 @@ class TqkRedirectEngine:
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
         self._processes[pid] = process
+        self._proxy_keys[pid] = proxy_key
         self._instance_pids.setdefault(instance_index, set()).add(pid)
         try:
             process.wait(timeout=1.0)
@@ -119,6 +124,7 @@ class TqkRedirectEngine:
 
         output = self._process_output(process)
         self._processes.pop(pid, None)
+        self._proxy_keys.pop(pid, None)
         self._discard_instance_pid(instance_index, pid)
         self._last_error = output or "Tqk redirector exited immediately"
         raise RuntimeError(self._last_error)
@@ -144,6 +150,7 @@ class TqkRedirectEngine:
 
     def _stop_pid(self, pid: int) -> None:
         process = self._processes.pop(pid, None)
+        self._proxy_keys.pop(pid, None)
         if process is None or process.poll() is not None:
             return
         process.terminate()

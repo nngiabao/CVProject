@@ -452,11 +452,10 @@ class MainWindow(QMainWindow):
         mapped_pid = self._mapped_nat_pid(instance)
         if mapped_pid is not None:
             pids.add(mapped_pid)
-        else:
-            nat_pids = vbox_nat_pids()
-            if len(nat_pids) == 1:
-                pids.update(nat_pids)
         return pids
+
+    def _missing_nat_mapping(self, instance: EmulatorInstance) -> bool:
+        return bool(vbox_nat_pids()) and self._mapped_nat_pid(instance) is None
 
     def _mapped_nat_pid(self, instance: EmulatorInstance) -> Optional[int]:
         if not instance.identity:
@@ -471,15 +470,18 @@ class MainWindow(QMainWindow):
             data = json.loads(self.nat_map_file.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError):
             self.nat_pid_map = {}
+            self._save_nat_pid_map()
             return
         if not isinstance(data, dict):
             self.nat_pid_map = {}
+            self._save_nat_pid_map()
             return
         self.nat_pid_map = {
             str(identity): int(pid)
             for identity, pid in data.items()
             if isinstance(identity, str) and isinstance(pid, int) and self._pid_is_alive(pid)
         }
+        self._save_nat_pid_map()
 
     def _save_nat_pid_map(self) -> None:
         try:
@@ -882,6 +884,11 @@ class MainWindow(QMainWindow):
             if instance is None or not self._route_pids(instance):
                 failures.append(f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection")
                 continue
+            if self._missing_nat_mapping(instance):
+                failures.append(
+                    f"Instance {instance_index}: missing VBoxNetNAT mapping. Stop it, then start it from this app."
+                )
+                continue
             status, proxy_ip = self._check_proxy(proxy)
             person.proxy_check = (status, proxy_ip)
             if status != "Running":
@@ -1148,6 +1155,11 @@ class MainWindow(QMainWindow):
             return {
                 "title": "Proxy routing failed",
                 "warning": f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection.",
+            }
+        if self._missing_nat_mapping(instance):
+            return {
+                "title": "Proxy routing failed",
+                "warning": f"Instance {instance_index}: missing VBoxNetNAT mapping. Stop it, then start it from this app.",
             }
 
         try:
