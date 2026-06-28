@@ -371,6 +371,7 @@ class LdPlayerProvider(EmulatorProvider):
 
     def _adb(self, index: int, command: str) -> str:
         last_error: Optional[RuntimeError] = None
+        fallback_error: Optional[RuntimeError] = None
         for attempt in range(4):
             try:
                 return self._run("adb", "--index", str(index), "--command", command)
@@ -379,20 +380,44 @@ class LdPlayerProvider(EmulatorProvider):
                 if _is_transient_adb_error(str(exc)):
                     try:
                         return self._adb_direct_serial(index, command)
-                    except RuntimeError:
-                        pass
+                    except RuntimeError as fallback_exc:
+                        fallback_error = fallback_exc
                 self._repair_missing_adb_device(str(exc), index)
                 if not _is_transient_adb_error(str(exc)) or attempt == 3:
                     break
                 time.sleep(1)
+        if fallback_error is not None:
+            raise RuntimeError(f"{last_error}; direct localhost ADB fallback failed: {fallback_error}")
         if last_error is not None:
             raise last_error
         raise RuntimeError("LDPlayer ADB command failed")
 
     def _adb_direct_serial(self, index: int, command: str) -> str:
-        serial = self._localhost_adb_serial(index)
-        self._run_adb_exe("connect", serial)
-        return self._run_adb_exe("-s", serial, *command.split())
+        errors: list[str] = []
+        for serial in self._candidate_localhost_serials(index):
+            try:
+                self._run_adb_exe("connect", serial)
+                return self._run_adb_exe("-s", serial, *command.split())
+            except RuntimeError as exc:
+                errors.append(f"{serial}: {exc}")
+        raise RuntimeError("; ".join(errors) or "no localhost ADB serials were available")
+
+    def _candidate_localhost_serials(self, index: int) -> list[str]:
+        expected = self._localhost_adb_serial(index)
+        serials = [expected]
+        try:
+            devices_output = self._run_adb_exe("devices")
+        except RuntimeError:
+            return serials
+
+        for line in devices_output.splitlines():
+            fields = line.split()
+            if len(fields) < 2 or fields[1] != "device":
+                continue
+            serial = fields[0]
+            if serial.startswith("127.0.0.1:") and serial not in serials:
+                serials.append(serial)
+        return serials
 
     def _run_adb_exe(self, *arguments: str) -> str:
         adb_path = self._adb_exe_path()
