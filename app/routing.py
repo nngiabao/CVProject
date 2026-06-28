@@ -12,6 +12,7 @@ from app.models import ProxyConfig
 
 
 BIND_HOST = "0.0.0.0"
+LOCAL_PROXY_HOST = "127.0.0.1"
 BASE_LISTEN_PORT = 19000
 BUFFER_SIZE = 64 * 1024
 
@@ -35,7 +36,7 @@ class RoutingService:
     def start(self, instance_index: int, proxy: ProxyConfig) -> RoutingSession:
         self.stop(instance_index)
         listen_port = BASE_LISTEN_PORT + instance_index
-        bridge = LocalHttpProxyBridge(instance_index, _host_lan_ip(), listen_port, proxy)
+        bridge = LocalHttpProxyBridge(instance_index, LOCAL_PROXY_HOST, listen_port, proxy)
         bridge.start()
         self._bridges[instance_index] = bridge
         return bridge.session
@@ -298,12 +299,3 @@ def _recv_until(sock: socket.socket, marker: bytes, limit: int) -> bytes:
     return bytes(data)
 
 
-def _host_lan_ip() -> str:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect(("8.8.8.8", 80))
-        return str(sock.getsockname()[0])
-    except OSError:
-        return "127.0.0.1"
-    finally:
-        sock.close()
