@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 import os
 import shutil
+import socket
 import subprocess
 import time
 from ctypes import POINTER, WinDLL, get_last_error
@@ -299,15 +300,33 @@ class LdPlayerProvider(EmulatorProvider):
         self._run("reboot", "--index", str(index))
 
     def set_http_proxy(self, index: int, host: str, port: int) -> str:
-        expected = f"127.0.0.1:{port}"
-        self._wait_for_adb(index, timeout=12)
-        self._adb(index, f"reverse tcp:{port} tcp:{port}")
+        self._wait_for_adb(index, timeout=20)
+        errors: list[str] = []
+        candidates = [candidate for candidate in ("10.0.2.2", _host_lan_ip(), host) if candidate]
+        candidates = [candidate for candidate in candidates if candidate != "127.0.0.1"]
+
+        for candidate_host in dict.fromkeys(candidates):
+            try:
+                return self._apply_http_proxy(index, candidate_host, port)
+            except RuntimeError as exc:
+                errors.append(f"{candidate_host}: {exc}")
+
+        try:
+            self._adb(index, f"reverse tcp:{port} tcp:{port}")
+            return self._apply_http_proxy(index, "127.0.0.1", port)
+        except RuntimeError as exc:
+            errors.append(f"adb reverse: {exc}")
+
+        raise RuntimeError("Could not apply Android proxy. " + " | ".join(errors))
+
+    def _apply_http_proxy(self, index: int, host: str, port: int) -> str:
+        expected = f"{host}:{port}"
         self._adb(index, f"shell settings put global http_proxy {expected}")
-        self._adb(index, "shell settings put global global_http_proxy_host 127.0.0.1")
+        self._adb(index, f"shell settings put global global_http_proxy_host {host}")
         self._adb(index, f"shell settings put global global_http_proxy_port {port}")
         applied = self.get_http_proxy(index)
         if applied != expected:
-            raise RuntimeError(f"Android proxy was not applied. Expected {expected}, got {applied or 'empty'}")
+            raise RuntimeError(f"expected {expected}, got {applied or 'empty'}")
         return applied
 
     def clear_http_proxy(self, index: int) -> None:
@@ -349,6 +368,17 @@ class LdPlayerProvider(EmulatorProvider):
                 last_error = str(exc)
             time.sleep(1)
         raise RuntimeError(f"ADB is not ready for instance {index}: {last_error}")
+
+
+def _host_lan_ip() -> str:
+    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+    try:
+        sock.connect(("8.8.8.8", 80))
+        return str(sock.getsockname()[0])
+    except OSError:
+        return ""
+    finally:
+        sock.close()
 
 
 class MultiLdPlayerProvider(EmulatorProvider):
