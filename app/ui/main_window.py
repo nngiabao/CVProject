@@ -174,13 +174,11 @@ class MainWindow(QMainWindow):
         heading.setObjectName("metric")
         layout.addWidget(heading)
 
-        self.table = QTableWidget(0, 9)
+        self.table = QTableWidget(0, 7)
         self.table.setHorizontalHeaderLabels(
             [
-                "#",
                 "Instance",
                 "",
-                "PID",
                 "State",
                 "Proxy status",
                 "Proxy running",
@@ -196,9 +194,9 @@ class MainWindow(QMainWindow):
         self.table.itemSelectionChanged.connect(self.render_selected_instance_tasks)
         header = self.table.horizontalHeader()
         header.setSectionResizeMode(QHeaderView.ResizeToContents)
-        header.setSectionResizeMode(1, QHeaderView.Interactive)
-        self.table.setColumnWidth(1, 145)
-        header.setSectionResizeMode(8, QHeaderView.Stretch)
+        header.setSectionResizeMode(0, QHeaderView.Interactive)
+        self.table.setColumnWidth(0, 165)
+        header.setSectionResizeMode(6, QHeaderView.Stretch)
         layout.addWidget(self.table, 1)
         return frame
 
@@ -261,10 +259,8 @@ class MainWindow(QMainWindow):
             assigned = person.proxy
             route = self.bot_manager.session(instance.index)
             values = (
-                self._display_instance_index(instance),
-                instance.name,
+                f"{self._display_instance_index(instance)}  {instance.name}",
                 "",
-                str(instance.pid or "—"),
                 instance.state.value,
                 "Assigned" if assigned else "Unassigned",
                 person.proxy_check[0] if assigned and person.proxy_check else "Not checked" if assigned else "—",
@@ -272,14 +268,14 @@ class MainWindow(QMainWindow):
                 route.local_proxy if route else "Off",
             )
             for column, value in enumerate(values):
-                if column == 2:
+                if column == 1:
                     self.table.setCellWidget(row, column, self._build_row_actions(instance.index))
                     continue
                 item = QTableWidgetItem(value)
                 item.setData(Qt.UserRole, instance.index)
-                if column == 1:
+                if column == 0:
                     item.setForeground(QColor("#172033"))
-                if column == 4:
+                if column == 2:
                     state_colors = {
                         InstanceState.RUNNING: "#198754",
                         InstanceState.STARTING: "#b7791f",
@@ -288,9 +284,9 @@ class MainWindow(QMainWindow):
                     }
                     color = state_colors[instance.state]
                     item.setForeground(QColor(color))
-                if column == 5:
+                if column == 3:
                     item.setForeground(QColor("#4169e1" if assigned else "#69758a"))
-                if column == 6:
+                if column == 4:
                     running_colors = {
                         "Running": "#198754",
                         "Routed": "#198754",
@@ -300,7 +296,7 @@ class MainWindow(QMainWindow):
                         "IP check failed": "#b7791f",
                     }
                     item.setForeground(QColor(running_colors.get(value, "#69758a")))
-                if column == 8:
+                if column == 6:
                     item.setForeground(QColor("#198754" if route else "#69758a"))
                 self.table.setItem(row, column, item)
 
@@ -612,7 +608,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Proxy assignment error", f"Could not save assignments: {exc}")
 
     def _choose_proxy_assignment(self, selected_count: int) -> tuple[Optional[str], Optional[ProxyConfig]]:
-        proxy_items = [f"{index + 1}. {proxy.display}" for index, proxy in enumerate(self.proxies)]
+        proxy_items = [f"{index + 1}. {proxy.host}:{proxy.port}" for index, proxy in enumerate(self.proxies)]
         items = proxy_items.copy()
         auto_label = "Auto assign different proxies"
         if selected_count > 1:
