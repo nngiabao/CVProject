@@ -391,8 +391,34 @@ class LdPlayerProvider(EmulatorProvider):
 
     def _adb_direct_serial(self, index: int, command: str) -> str:
         serial = self._localhost_adb_serial(index)
-        self._run("adb", "--command", f"connect {serial}")
-        return self._run("adb", "--command", f"-s {serial} {command}")
+        self._run_adb_exe("connect", serial)
+        return self._run_adb_exe("-s", serial, *command.split())
+
+    def _run_adb_exe(self, *arguments: str) -> str:
+        adb_path = self._adb_exe_path()
+        result = subprocess.run(
+            [str(adb_path), *arguments],
+            check=False,
+            capture_output=True,
+            text=True,
+            encoding="utf-8",
+            errors="replace",
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=20,
+        )
+        if result.returncode != 0:
+            message = result.stderr.strip() or result.stdout.strip() or "ADB command failed"
+            raise RuntimeError(message)
+        return result.stdout.strip()
+
+    def _adb_exe_path(self) -> Path:
+        local_adb = self.console_path.parent / "adb.exe"
+        if local_adb.is_file():
+            return local_adb
+        discovered = shutil.which("adb.exe") or shutil.which("adb")
+        if discovered:
+            return Path(discovered)
+        raise RuntimeError(f"adb.exe was not found near {self.console_path.parent}")
 
     @staticmethod
     def _localhost_adb_serial(index: int) -> str:
@@ -407,7 +433,7 @@ class LdPlayerProvider(EmulatorProvider):
         if port <= 0:
             return
         try:
-            self._run("adb", "--command", f"connect 127.0.0.1:{port}")
+            self._run_adb_exe("connect", f"127.0.0.1:{port}")
         except RuntimeError:
             pass
 
