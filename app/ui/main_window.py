@@ -254,7 +254,7 @@ class MainWindow(QMainWindow):
             assigned = person.proxy
             route = self.bot_manager.session(instance.index)
             values = (
-                str(instance.index),
+                self._display_instance_index(instance),
                 instance.name,
                 "",
                 str(instance.pid or "—"),
@@ -752,6 +752,12 @@ class MainWindow(QMainWindow):
 
     def _instance_by_index(self, instance_index: int) -> Optional[EmulatorInstance]:
         return next((instance for instance in self.instances if instance.index == instance_index), None)
+
+    def _display_instance_index(self, instance: EmulatorInstance) -> str:
+        local_index = instance.index % 10000
+        if instance.index >= 10000:
+            return f"{instance.platform}:{local_index}"
+        return str(instance.index)
 
     def _clear_emulator_proxy(self, instance_index: int) -> None:
         try:

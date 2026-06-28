@@ -15,6 +15,7 @@ from app.models import EmulatorInstance, InstanceState
 
 
 class LdPlayerProvider(EmulatorProvider):
+    ENCODED_INDEX_STEP = 10000
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
     STILL_ACTIVE = 259
     COMMON_PATHS = (
@@ -49,7 +50,7 @@ class LdPlayerProvider(EmulatorProvider):
         return f"LDPlayer ({self.console_path.parent})"
 
     @classmethod
-    def detect(cls) -> Optional[LdPlayerProvider]:
+    def detect(cls) -> Optional[EmulatorProvider]:
         configured = os.environ.get("LDPLAYER_CONSOLE")
         candidates: list[Path] = []
         if configured:
@@ -65,7 +66,7 @@ class LdPlayerProvider(EmulatorProvider):
         candidates.extend(cls.COMMON_PATHS)
         candidates.extend(cls._registry_candidates())
 
-        existing: list[Path] = []
+        existing_by_folder: dict[Path, Path] = {}
         seen: set[str] = set()
         for candidate in candidates:
             normalized = os.path.normcase(os.path.abspath(candidate))
@@ -73,13 +74,18 @@ class LdPlayerProvider(EmulatorProvider):
                 continue
             seen.add(normalized)
             if candidate.is_file():
-                existing.append(candidate)
-        if not existing:
+                existing_by_folder.setdefault(candidate.parent.resolve(), candidate)
+        if not existing_by_folder:
             return None
 
-        scored = [(cls._instance_count(candidate), candidate) for candidate in existing]
+        scored = [(cls._instance_count(candidate), candidate) for candidate in existing_by_folder.values()]
         scored.sort(key=lambda item: item[0], reverse=True)
-        return cls(scored[0][1])
+        providers = [cls(candidate) for count, candidate in scored if count > 0]
+        if not providers:
+            return cls(scored[0][1])
+        if len(providers) == 1:
+            return providers[0]
+        return MultiLdPlayerProvider(providers)
 
     @classmethod
     def _instance_count(cls, console_path: Path) -> int:
@@ -181,13 +187,16 @@ class LdPlayerProvider(EmulatorProvider):
 
     def list_instances(self) -> list[EmulatorInstance]:
         output = self._run("list2")
+        return self._parse_instances(output, 0)
+
+    def _parse_instances(self, output: str, provider_slot: int) -> list[EmulatorInstance]:
         instances: list[EmulatorInstance] = []
         for line in output.splitlines():
             fields = [field.strip() for field in line.split(",")]
             if len(fields) < 2:
                 continue
             try:
-                index = int(fields[0])
+                local_index = int(fields[0])
             except ValueError:
                 continue
 
@@ -204,13 +213,31 @@ class LdPlayerProvider(EmulatorProvider):
                 state = InstanceState.STOPPED
             instances.append(
                 EmulatorInstance(
-                    index=index,
-                    name=fields[1] or f"LDPlayer-{index}",
+                    index=self._encode_index(provider_slot, local_index),
+                    name=fields[1] or f"LDPlayer-{local_index}",
                     state=state,
                     pid=pid if process_alive else None,
+                    platform=self._platform_label(provider_slot),
                 )
             )
         return instances
+
+    @classmethod
+    def _encode_index(cls, provider_slot: int, local_index: int) -> int:
+        if provider_slot <= 0:
+            return local_index
+        return provider_slot * cls.ENCODED_INDEX_STEP + local_index
+
+    @classmethod
+    def _decode_index(cls, encoded_index: int) -> tuple[int, int]:
+        provider_slot = encoded_index // cls.ENCODED_INDEX_STEP
+        local_index = encoded_index % cls.ENCODED_INDEX_STEP
+        return provider_slot, local_index
+
+    def _platform_label(self, provider_slot: int) -> str:
+        if provider_slot <= 0:
+            return "LDPlayer"
+        return f"LDPlayer {self.console_path.parent.name}"
 
     @classmethod
     def _running_pid_from_fields(cls, fields: list[str]) -> Optional[int]:
@@ -313,3 +340,66 @@ class LdPlayerProvider(EmulatorProvider):
                 last_error = str(exc)
             time.sleep(2)
         raise RuntimeError(f"ADB is not ready for instance {index}: {last_error}")
+
+
+class MultiLdPlayerProvider(EmulatorProvider):
+    def __init__(self, providers: list[LdPlayerProvider]) -> None:
+        self.providers = providers
+
+    @property
+    def display_name(self) -> str:
+        folders = ", ".join(provider.console_path.parent.name for provider in self.providers)
+        return f"LDPlayer installs ({folders})"
+
+    def list_instances(self) -> list[EmulatorInstance]:
+        instances: list[EmulatorInstance] = []
+        failures: list[str] = []
+        for provider_slot, provider in enumerate(self.providers, start=1):
+            try:
+                output = provider._run("list2")
+            except Exception as exc:
+                failures.append(f"{provider.console_path.parent}: {exc}")
+                continue
+            instances.extend(provider._parse_instances(output, provider_slot))
+        if not instances and failures:
+            raise RuntimeError("\n".join(failures))
+        return instances
+
+    def start(self, index: int) -> None:
+        provider, local_index = self._provider_for_index(index)
+        provider.start(local_index)
+
+    def stop(self, index: int) -> None:
+        provider, local_index = self._provider_for_index(index)
+        provider.stop(local_index)
+
+    def restart(self, index: int) -> None:
+        provider, local_index = self._provider_for_index(index)
+        provider.restart(local_index)
+
+    def set_http_proxy(self, index: int, host: str, port: int) -> str:
+        provider, local_index = self._provider_for_index(index)
+        return provider.set_http_proxy(local_index, host, port)
+
+    def clear_http_proxy(self, index: int) -> None:
+        provider, local_index = self._provider_for_index(index)
+        provider.clear_http_proxy(local_index)
+
+    def get_http_proxy(self, index: int) -> str:
+        provider, local_index = self._provider_for_index(index)
+        return provider.get_http_proxy(local_index)
+
+    def screenshot_png(self, index: int) -> bytes:
+        provider, local_index = self._provider_for_index(index)
+        return provider.screenshot_png(local_index)
+
+    def _provider_for_index(self, encoded_index: int) -> tuple[LdPlayerProvider, int]:
+        provider_slot, local_index = LdPlayerProvider._decode_index(encoded_index)
+        if provider_slot <= 0:
+            if len(self.providers) != 1:
+                raise RuntimeError(f"Instance {encoded_index} does not identify an LDPlayer install")
+            return self.providers[0], local_index
+        provider_position = provider_slot - 1
+        if provider_position < 0 or provider_position >= len(self.providers):
+            raise RuntimeError(f"Instance {encoded_index} uses an unknown LDPlayer install")
+        return self.providers[provider_position], local_index
