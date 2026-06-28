@@ -266,7 +266,7 @@ class MainWindow(QMainWindow):
             person = self.bot_manager.person(instance.index)
             assigned = person.proxy
             is_routed = instance.index in self.bot_manager.routed_indexes()
-            route_target = self._format_pids(self._route_pids(instance)) if is_routed else "Off"
+            route_target = self._format_pids(self._redirect_pids(instance)) if is_routed else "Off"
             values = (
                 instance.name,
                 "",
@@ -447,12 +447,12 @@ class MainWindow(QMainWindow):
             return "PIDs " + ", ".join(str(pid) for pid in values)
         return "PIDs " + ", ".join(str(pid) for pid in values[:3]) + f" +{len(values) - 3}"
 
-    def _route_pids(self, instance: EmulatorInstance) -> set[int]:
-        pids = instance.live_pids()
+    def _redirect_pids(self, instance: EmulatorInstance) -> set[int]:
         mapped_pid = self._mapped_nat_pid(instance)
-        if mapped_pid is not None:
-            pids.add(mapped_pid)
-        return pids
+        return {mapped_pid} if mapped_pid is not None else set()
+
+    def _protected_pids(self, instance: EmulatorInstance) -> set[int]:
+        return instance.live_pids() | self._redirect_pids(instance)
 
     def _missing_nat_mapping(self, instance: EmulatorInstance) -> bool:
         return bool(vbox_nat_pids()) and self._mapped_nat_pid(instance) is None
@@ -597,7 +597,7 @@ class MainWindow(QMainWindow):
 
     def _start_task_after_routing(self, instance_index: int, task_row: int) -> None:
         instance = self._instance_by_index(instance_index)
-        if instance is None or not self._route_pids(instance):
+        if instance is None or not (instance.live_pids() or self._redirect_pids(instance)):
             QMessageBox.information(
                 self,
                 "Start LDPlayer first",
@@ -915,7 +915,7 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: assign a proxy first")
                 continue
             instance = self._instance_by_index(instance_index)
-            if instance is None or not self._route_pids(instance):
+            if instance is None or not instance.live_pids():
                 failures.append(f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection")
                 continue
             nat_pid = self._ensure_nat_mapping(instance)
@@ -930,7 +930,7 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: proxy check failed ({status})")
                 continue
             try:
-                route_pids = self._route_pids(instance)
+                route_pids = self._redirect_pids(instance)
                 self.redirect_engine.start_many(instance_index, route_pids, proxy)
                 self.bot_manager.start_direct_routing(instance_index)
                 clear_error = self._clear_emulator_proxy(instance_index)
@@ -1060,7 +1060,7 @@ class MainWindow(QMainWindow):
         for instance_index in self.bot_manager.routed_indexes():
             instance = self._instance_by_index(instance_index)
             if instance is not None:
-                mapped_nat_pids.update(self._route_pids(instance))
+                mapped_nat_pids.update(self._protected_pids(instance))
         return instance_pids | mapped_nat_pids | ldplayer_related_pids()
 
     def _instance_by_index(self, instance_index: int) -> Optional[EmulatorInstance]:
@@ -1186,7 +1186,7 @@ class MainWindow(QMainWindow):
                 "warning": f"Instance {instance_index} has a saved proxy, but the proxy check failed ({status}).",
             }
         instance = self._instance_by_index(instance_index)
-        if instance is None or not self._route_pids(instance):
+        if instance is None or not instance.live_pids():
             return {
                 "title": "Proxy routing failed",
                 "warning": f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection.",
@@ -1199,7 +1199,7 @@ class MainWindow(QMainWindow):
             }
 
         try:
-            route_pids = self._route_pids(instance)
+            route_pids = self._redirect_pids(instance)
             self.redirect_engine.start_many(instance_index, route_pids, proxy)
             self.bot_manager.start_direct_routing(instance_index)
             clear_error = self._clear_emulator_proxy(instance_index)
