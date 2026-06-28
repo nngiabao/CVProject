@@ -30,7 +30,7 @@ from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
 from app.models import EmulatorInstance, InstanceState, ProxyConfig
 from app.process_utils import ldplayer_related_pids
-from app.proxy_check import check_proxy
+from app.proxy_check import check_http_proxy_public_ip, check_proxy
 from app.proxy_parser import parse_proxy_line, parse_proxy_text
 from app.routing import RoutingService
 from app.windivert_guard import WinDivertGuard
@@ -286,9 +286,11 @@ class MainWindow(QMainWindow):
                 if column == 6:
                     running_colors = {
                         "Running": "#198754",
+                        "Routed": "#198754",
                         "Not running": "#d64550",
                         "Auth failed": "#d64550",
                         "Not checked": "#b7791f",
+                        "IP check failed": "#b7791f",
                     }
                     item.setForeground(QColor(running_colors.get(value, "#69758a")))
                 if column == 8:
@@ -652,7 +654,8 @@ class MainWindow(QMainWindow):
             try:
                 session = self.bot_manager.start_routing(instance_index)
                 applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
-                applied_routes.append(f"Instance {instance_index}: {applied_proxy}")
+                person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
+                applied_routes.append(f"Instance {instance_index}: {applied_proxy} -> {person.proxy_check[1]}")
                 started += 1
             except Exception as exc:
                 self.bot_manager.stop_routing(instance_index)
@@ -697,6 +700,9 @@ class MainWindow(QMainWindow):
 
     def _check_proxy(self, proxy: ProxyConfig) -> tuple[str, str]:
         return check_proxy(proxy)
+
+    def _check_routed_public_ip(self, host: str, port: int) -> tuple[str, str]:
+        return check_http_proxy_public_ip(host, port)
 
     def _protection_label(self) -> str:
         if self.windivert_guard.running:
@@ -832,6 +838,7 @@ class MainWindow(QMainWindow):
         try:
             session = self.bot_manager.start_routing(instance_index)
             applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
+            person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
         except Exception as exc:
             self.bot_manager.stop_routing(instance_index)
             self._render_instances()
@@ -846,7 +853,7 @@ class MainWindow(QMainWindow):
         self._update_windivert_guard()
         self._render_instances()
         self.statusBar().showMessage(
-            f"Instance {instance_index} started with saved proxy route {applied_proxy}",
+            f"Instance {instance_index} started with saved proxy route {applied_proxy} -> {person.proxy_check[1]}",
             5000,
         )
         return True

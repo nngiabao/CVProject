@@ -5,6 +5,9 @@ import socket
 from app.models import ProxyConfig
 
 
+PUBLIC_IP_HOST = "api.ipify.org"
+
+
 def check_proxy(proxy: ProxyConfig, timeout: float = 5) -> tuple[str, str]:
     try:
         proxy_ip = socket.gethostbyname(proxy.host)
@@ -19,6 +22,33 @@ def check_proxy(proxy: ProxyConfig, timeout: float = 5) -> tuple[str, str]:
             return "Running", proxy_ip
     except OSError:
         return "Not running", proxy_ip
+
+
+def check_http_proxy_public_ip(host: str, port: int, timeout: float = 8) -> tuple[str, str]:
+    try:
+        with socket.create_connection((host, port), timeout=timeout) as sock:
+            sock.settimeout(timeout)
+            request = (
+                f"GET http://{PUBLIC_IP_HOST}/ HTTP/1.1\r\n"
+                f"Host: {PUBLIC_IP_HOST}\r\n"
+                "Connection: close\r\n"
+                "User-Agent: GrowStoneBot/1.0\r\n"
+                "\r\n"
+            ).encode("ascii")
+            sock.sendall(request)
+            response = _recv_all(sock)
+    except OSError as exc:
+        return "IP check failed", str(exc)
+
+    header, _, body = response.partition(b"\r\n\r\n")
+    status_line = header.splitlines()[0].decode("iso-8859-1", errors="replace") if header else ""
+    if " 200 " not in status_line:
+        return "IP check failed", status_line or "empty response"
+
+    public_ip = body.decode("ascii", errors="ignore").strip()
+    if not public_ip:
+        return "IP check failed", "empty response body"
+    return "Routed", public_ip
 
 
 def _check_socks5_proxy(proxy: ProxyConfig, proxy_ip: str, timeout: float) -> tuple[str, str]:
@@ -48,6 +78,16 @@ def _authenticate_socks5(sock: socket.socket, proxy: ProxyConfig) -> bool:
     sock.sendall(bytes([0x01, len(username)]) + username + bytes([len(password)]) + password)
     version, status = _recv_exact(sock, 2)
     return version == 0x01 and status == 0x00
+
+
+def _recv_all(sock: socket.socket) -> bytes:
+    data = bytearray()
+    while True:
+        chunk = sock.recv(4096)
+        if not chunk:
+            break
+        data.extend(chunk)
+    return bytes(data)
 
 
 def _recv_exact(sock: socket.socket, size: int) -> bytes:
