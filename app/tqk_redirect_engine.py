@@ -27,7 +27,8 @@ class TqkRedirectStatus:
 class TqkRedirectEngine:
     def __init__(self, project_root: Path) -> None:
         self.project_root = project_root
-        self._processes: dict[tuple[int, int], subprocess.Popen[str]] = {}
+        self._processes: dict[int, subprocess.Popen[str]] = {}
+        self._instance_pids: dict[int, set[int]] = {}
         self._last_error: Optional[str] = None
         self._log_dir = project_root / "tools" / "tqk_redirector" / "logs"
 
@@ -63,11 +64,11 @@ class TqkRedirectEngine:
         return TqkRedirectStatus(True, f"Tqk redirector ready: {' '.join(command)}")
 
     def start(self, instance_index: int, pid: int, proxy: ProxyConfig) -> None:
-        key = (instance_index, pid)
-        current = self._processes.get(key)
+        current = self._processes.get(pid)
         if current is not None and current.poll() is None:
+            self._instance_pids.setdefault(instance_index, set()).add(pid)
             return
-        self._stop_key(key)
+        self._stop_pid(pid)
 
         status = self.status()
         if not status.available:
@@ -109,14 +110,16 @@ class TqkRedirectEngine:
             errors="replace",
             creationflags=subprocess.CREATE_NO_WINDOW,
         )
-        self._processes[key] = process
+        self._processes[pid] = process
+        self._instance_pids.setdefault(instance_index, set()).add(pid)
         try:
             process.wait(timeout=1.0)
         except subprocess.TimeoutExpired:
             return
 
         output = self._process_output(process)
-        self._processes.pop(key, None)
+        self._processes.pop(pid, None)
+        self._discard_instance_pid(instance_index, pid)
         self._last_error = output or "Tqk redirector exited immediately"
         raise RuntimeError(self._last_error)
 
@@ -135,11 +138,12 @@ class TqkRedirectEngine:
             self._last_error = "; ".join(failures)
 
     def stop(self, instance_index: int) -> None:
-        for key in [key for key in self._processes if key[0] == instance_index]:
-            self._stop_key(key)
+        for pid in list(self._instance_pids.pop(instance_index, set())):
+            if not any(pid in pids for pids in self._instance_pids.values()):
+                self._stop_pid(pid)
 
-    def _stop_key(self, key: tuple[int, int]) -> None:
-        process = self._processes.pop(key, None)
+    def _stop_pid(self, pid: int) -> None:
+        process = self._processes.pop(pid, None)
         if process is None or process.poll() is not None:
             return
         process.terminate()
@@ -150,13 +154,24 @@ class TqkRedirectEngine:
             process.wait(timeout=5)
 
     def stop_all(self) -> None:
-        for key in list(self._processes):
-            self._stop_key(key)
+        self._instance_pids.clear()
+        for pid in list(self._processes):
+            self._stop_pid(pid)
 
     def _cleanup_finished(self) -> None:
-        for instance_index, process in list(self._processes.items()):
+        for pid, process in list(self._processes.items()):
             if process.poll() is not None:
-                self._processes.pop(instance_index, None)
+                self._processes.pop(pid, None)
+                for instance_index in list(self._instance_pids):
+                    self._discard_instance_pid(instance_index, pid)
+
+    def _discard_instance_pid(self, instance_index: int, pid: int) -> None:
+        pids = self._instance_pids.get(instance_index)
+        if not pids:
+            return
+        pids.discard(pid)
+        if not pids:
+            self._instance_pids.pop(instance_index, None)
 
     def _base_command(self) -> tuple[Optional[list[str]], Optional[Path]]:
         configured = os.environ.get("TQK_REDIRECTOR_EXE", "").strip()

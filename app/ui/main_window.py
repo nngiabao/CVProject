@@ -31,7 +31,7 @@ from PySide6.QtWidgets import (
 from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
 from app.models import EmulatorInstance, InstanceState, ProxyConfig
-from app.process_utils import ldplayer_related_pids
+from app.process_utils import ldplayer_related_pids, vbox_nat_pids
 from app.proxy_check import check_proxy
 from app.proxy_parser import parse_proxy_line, parse_proxy_text
 from app.routing import RoutingService
@@ -262,7 +262,7 @@ class MainWindow(QMainWindow):
             person = self.bot_manager.person(instance.index)
             assigned = person.proxy
             is_routed = instance.index in self.bot_manager.routed_indexes()
-            route_target = self._format_pids(instance.live_pids()) if is_routed else "Off"
+            route_target = self._format_pids(self._route_pids(instance)) if is_routed else "Off"
             values = (
                 instance.name,
                 "",
@@ -439,9 +439,13 @@ class MainWindow(QMainWindow):
             return "PIDs " + ", ".join(str(pid) for pid in values)
         return "PIDs " + ", ".join(str(pid) for pid in values[:3]) + f" +{len(values) - 3}"
 
+    @staticmethod
+    def _route_pids(instance: EmulatorInstance) -> set[int]:
+        return instance.live_pids() | vbox_nat_pids()
+
     def _start_task_after_routing(self, instance_index: int, task_row: int) -> None:
         instance = self._instance_by_index(instance_index)
-        if instance is None or not instance.live_pids():
+        if instance is None or not self._route_pids(instance):
             QMessageBox.information(
                 self,
                 "Start LDPlayer first",
@@ -759,7 +763,7 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: assign a proxy first")
                 continue
             instance = self._instance_by_index(instance_index)
-            if instance is None or not instance.live_pids():
+            if instance is None or not self._route_pids(instance):
                 failures.append(f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection")
                 continue
             status, proxy_ip = self._check_proxy(proxy)
@@ -768,14 +772,15 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: proxy check failed ({status})")
                 continue
             try:
-                self.redirect_engine.start_many(instance_index, instance.live_pids(), proxy)
+                route_pids = self._route_pids(instance)
+                self.redirect_engine.start_many(instance_index, route_pids, proxy)
                 self.bot_manager.start_direct_routing(instance_index)
                 clear_error = self._clear_emulator_proxy(instance_index)
                 if clear_error:
                     raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
                 person.proxy_check = ("Redirected", proxy_ip)
                 applied_routes.append(
-                    f"Instance {instance_index}: {self._format_pids(instance.live_pids())} -> {proxy.host}"
+                    f"Instance {instance_index}: {self._format_pids(route_pids)} -> {proxy.host}"
                 )
                 started_indexes.append(instance_index)
                 started += 1
@@ -893,7 +898,7 @@ class MainWindow(QMainWindow):
         instance_pids = self.bot_manager.routed_pids()
         if not instance_pids:
             return set()
-        return instance_pids | ldplayer_related_pids()
+        return instance_pids | ldplayer_related_pids() | vbox_nat_pids()
 
     def _instance_by_index(self, instance_index: int) -> Optional[EmulatorInstance]:
         return next((instance for instance in self.instances if instance.index == instance_index), None)
@@ -1018,20 +1023,21 @@ class MainWindow(QMainWindow):
                 "warning": f"Instance {instance_index} has a saved proxy, but the proxy check failed ({status}).",
             }
         instance = self._instance_by_index(instance_index)
-        if instance is None or not instance.live_pids():
+        if instance is None or not self._route_pids(instance):
             return {
                 "title": "Proxy routing failed",
                 "warning": f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection.",
             }
 
         try:
-            self.redirect_engine.start_many(instance_index, instance.live_pids(), proxy)
+            route_pids = self._route_pids(instance)
+            self.redirect_engine.start_many(instance_index, route_pids, proxy)
             self.bot_manager.start_direct_routing(instance_index)
             clear_error = self._clear_emulator_proxy(instance_index)
             if clear_error:
                 raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
             person.proxy_check = ("Redirected", proxy_ip)
-            applied_proxy = self._format_pids(instance.live_pids())
+            applied_proxy = self._format_pids(route_pids)
         except Exception as exc:
             self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)
