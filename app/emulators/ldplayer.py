@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from typing import Optional
 import os
+import re
 import shutil
 import socket
 import subprocess
@@ -375,12 +376,23 @@ class LdPlayerProvider(EmulatorProvider):
                 return self._run("adb", "--index", str(index), "--command", command)
             except RuntimeError as exc:
                 last_error = exc
+                self._repair_missing_adb_device(str(exc))
                 if not _is_transient_adb_error(str(exc)) or attempt == 3:
                     break
                 time.sleep(1)
         if last_error is not None:
             raise last_error
         raise RuntimeError("LDPlayer ADB command failed")
+
+    def _repair_missing_adb_device(self, message: str) -> None:
+        match = re.search(r"device 'emulator-(\d+)' not found", message)
+        if not match:
+            return
+        port = int(match.group(1)) + 1
+        try:
+            self._run("adb", "--command", f"connect 127.0.0.1:{port}")
+        except RuntimeError:
+            pass
 
     def screenshot_png(self, index: int) -> bytes:
         self._wait_for_adb(index, timeout=10)
