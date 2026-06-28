@@ -347,10 +347,22 @@ class LdPlayerProvider(EmulatorProvider):
         self._adb(index, "shell settings delete global global_http_proxy_port")
 
     def get_http_proxy(self, index: int) -> str:
+        self._wait_for_adb(index, timeout=30)
         return self._adb(index, "shell settings get global http_proxy").strip()
 
     def _adb(self, index: int, command: str) -> str:
-        return self._run("adb", "--index", str(index), "--command", command)
+        last_error: Optional[RuntimeError] = None
+        for attempt in range(4):
+            try:
+                return self._run("adb", "--index", str(index), "--command", command)
+            except RuntimeError as exc:
+                last_error = exc
+                if not _is_transient_adb_error(str(exc)) or attempt == 3:
+                    break
+                time.sleep(1)
+        if last_error is not None:
+            raise last_error
+        raise RuntimeError("LDPlayer ADB command failed")
 
     def screenshot_png(self, index: int) -> bytes:
         self._wait_for_adb(index, timeout=10)
@@ -380,6 +392,18 @@ def _host_lan_ip() -> str:
         return ""
     finally:
         sock.close()
+
+
+def _is_transient_adb_error(message: str) -> bool:
+    normalized = message.lower()
+    transient_markers = (
+        "device not found",
+        "device offline",
+        "no devices",
+        "cannot connect",
+        "failed to connect",
+    )
+    return any(marker in normalized for marker in transient_markers)
 
 
 class MultiLdPlayerProvider(EmulatorProvider):
