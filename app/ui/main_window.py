@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from typing import Any, Optional
 from collections.abc import Callable
 from pathlib import Path
@@ -308,7 +309,10 @@ class MainWindow(QMainWindow):
         self.assigned_metric.setText(f"Assigned: {self.bot_manager.assigned_count()}")
         self.protection_metric.setText(self._protection_label())
         guard_stats = self.windivert_guard.stats
-        self.guard_metric.setText(f"Guard: {guard_stats.protected_pids} PIDs / {guard_stats.blocked} blocked")
+        self.guard_metric.setText(
+            f"Guard: {guard_stats.protected_pids} PIDs / "
+            f"{guard_stats.blocked_tcp} TCP + {guard_stats.blocked_udp} UDP blocked"
+        )
 
     def _build_row_actions(self, instance_index: int) -> QWidget:
         widget = QWidget()
@@ -465,7 +469,17 @@ class MainWindow(QMainWindow):
 
         self.bot_manager.person(instance_index).set_task_enabled(task_row, True)
         self.refresh_instances()
-        self._update_windivert_guard()
+        if not self._update_windivert_guard():
+            self.bot_manager.person(instance_index).set_task_enabled(task_row, False)
+            self.bot_manager.stop_routing(instance_index)
+            self._clear_emulator_proxy(instance_index)
+            self.refresh_instances()
+            QMessageBox.warning(
+                self,
+                "Kill switch failed",
+                f"WinDivert kill switch is not active: {self._protection_failure_message()}",
+            )
+            return
         self.render_selected_instance_tasks()
 
         message = "Bot task enabled"
@@ -723,6 +737,7 @@ class MainWindow(QMainWindow):
 
         failures: list[str] = []
         applied_routes: list[str] = []
+        started_indexes: list[int] = []
         started = 0
         for instance_index in indexes:
             person = self.bot_manager.person(instance_index)
@@ -750,13 +765,21 @@ class MainWindow(QMainWindow):
                     continue
                 applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
                 applied_routes.append(f"Instance {instance_index}: {applied_proxy} -> {person.proxy_check[1]}")
+                started_indexes.append(instance_index)
                 started += 1
             except Exception as exc:
                 self.bot_manager.stop_routing(instance_index)
                 self._clear_emulator_proxy(instance_index)
                 failures.append(f"Instance {instance_index}: {exc}")
 
-        self._update_windivert_guard()
+        guard_ready = self._update_windivert_guard()
+        if started and not guard_ready:
+            for instance_index in started_indexes:
+                self.bot_manager.stop_routing(instance_index)
+                self._clear_emulator_proxy(instance_index)
+            started = 0
+            applied_routes.clear()
+            failures.append(f"WinDivert kill switch is not active: {self._protection_failure_message()}")
         self._render_instances()
         if failures:
             QMessageBox.warning(self, "Some routing sessions failed", "\n".join(failures))
@@ -818,29 +841,38 @@ class MainWindow(QMainWindow):
                 "Local authenticated proxy routing is running, and the WinDivert kill switch is active "
                 "for LDPlayer-related process IDs.\n\n"
                 f"Android proxy applied:\n{applied_text}\n\n"
-                "Direct public TCP/UDP traffic from protected LDPlayer processes will be blocked. "
+                "Direct public TCP traffic and UDP leaks from protected LDPlayer processes will be blocked. "
+                "UDP DNS port 53 is allowed for name resolution. "
                 "Transparent redirect is still the next layer.",
             )
-        elif self.windivert_status.available:
-            error = self.windivert_guard.stats.last_error
-            final_status += " - WinDivert optional guard did not start"
-            if error:
-                final_status += f": {error}"
         else:
-            final_status += f" - WinDivert optional: {self.windivert_status.message}"
+            final_status += f" - kill switch failed: {self._protection_failure_message()}"
         self.statusBar().showMessage(final_status, 5000)
 
-    def _update_windivert_guard(self) -> None:
+    def _update_windivert_guard(self) -> bool:
         pids = self._active_routed_pids()
         if not pids:
             self.windivert_guard.stop()
-            return
+            return True
         if self.windivert_guard.running:
             self.windivert_guard.update_pids(pids)
-            return
+            return True
         self.windivert_status = check_windivert()
         if self.windivert_status.available:
             self.windivert_guard.start(pids)
+            time_limit = time.monotonic() + 2.0
+            while time.monotonic() < time_limit:
+                if self.windivert_guard.running:
+                    return True
+                if self.windivert_guard.stats.last_error:
+                    return False
+                time.sleep(0.05)
+        return self.windivert_guard.running
+
+    def _protection_failure_message(self) -> str:
+        if self.windivert_guard.stats.last_error:
+            return self.windivert_guard.stats.last_error
+        return self.windivert_status.message
 
     def _active_routed_pids(self) -> set[int]:
         instance_pids = self.bot_manager.routed_pids()

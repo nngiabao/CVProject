@@ -16,6 +16,9 @@ SOCKET_REFRESH_SECONDS = 1.0
 class GuardStats:
     forwarded: int = 0
     blocked: int = 0
+    blocked_tcp: int = 0
+    blocked_udp: int = 0
+    allowed_dns: int = 0
     protected_pids: int = 0
     last_error: Optional[str] = None
 
@@ -82,9 +85,15 @@ class WinDivertGuard:
 
                 packet = self._handle.recv()
                 owner_pid = self._owner_pid(packet, tcp_map, udp_map)
-                if owner_pid in self._protected_pids_snapshot() and self._is_public_destination(packet.dst_addr):
+                if owner_pid in self._protected_pids_snapshot() and self._should_block(packet):
                     self.stats.blocked += 1
+                    if packet.tcp is not None:
+                        self.stats.blocked_tcp += 1
+                    elif packet.udp is not None:
+                        self.stats.blocked_udp += 1
                     continue
+                if owner_pid in self._protected_pids_snapshot() and self._is_dns_packet(packet):
+                    self.stats.allowed_dns += 1
 
                 self._handle.send(packet)
                 self.stats.forwarded += 1
@@ -102,6 +111,13 @@ class WinDivertGuard:
         with self._lock:
             return set(self.protected_pids)
 
+    def _should_block(self, packet: object) -> bool:
+        if packet.udp is not None:
+            return not self._is_dns_packet(packet)
+        if not self._is_public_destination(packet.dst_addr):
+            return False
+        return packet.tcp is not None
+
     @staticmethod
     def _owner_pid(packet: object, tcp_map: dict[tuple[str, int], int], udp_map: dict[tuple[str, int], int]) -> Optional[int]:
         source_key = (packet.src_addr, packet.src_port)
@@ -111,6 +127,10 @@ class WinDivertGuard:
         if packet.udp is not None:
             return udp_map.get(source_key) or udp_map.get(destination_key)
         return None
+
+    @staticmethod
+    def _is_dns_packet(packet: object) -> bool:
+        return packet.udp is not None and (packet.dst_port == 53 or packet.src_port == 53)
 
     @staticmethod
     def _is_public_destination(address: Optional[str]) -> bool:
