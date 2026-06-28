@@ -38,8 +38,8 @@ def show_elevation_error() -> None:
         return
     ctypes.windll.user32.MessageBoxW(
         None,
-        "Administrator access is required to control LDPlayer and run the future "
-        "WinDivert routing service.",
+        "Administrator access is required to control LDPlayer, configure ADB proxy "
+        "settings, and run WinDivert proxy protection.",
         "Emulator Proxy Manager",
         0x10,
     )

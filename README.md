@@ -18,7 +18,8 @@ python main.py
 ```
 
 On Windows, the application automatically requests Administrator access through
-UAC. LDPlayer control and the future WinDivert routing layer require elevation.
+UAC. LDPlayer control, ADB proxy setup, and WinDivert protection require
+elevation.
 
 The application searches common LDPlayer installation folders. Set
 `LDPLAYER_CONSOLE` to the full path of `dnconsole.exe` or `ldconsole.exe` when

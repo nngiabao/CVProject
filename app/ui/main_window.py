@@ -136,7 +136,7 @@ class MainWindow(QMainWindow):
         assign.clicked.connect(self.assign_proxies)
         check = QPushButton("Check selected proxies")
         check.clicked.connect(self.check_selected_proxies)
-        route = QPushButton("Start proxy routing")
+        route = QPushButton("Start proxy")
         route.setToolTip("Starts local authenticated SOCKS5 bridges for selected assigned instances")
         route.clicked.connect(self.start_proxy_routing)
         stop_route = QPushButton("Stop proxy routing")
