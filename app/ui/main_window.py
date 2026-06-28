@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import threading
 import time
@@ -35,6 +36,7 @@ from app.models import EmulatorInstance, InstanceState, ProxyConfig
 from app.process_utils import ldplayer_related_pids, vbox_nat_pids
 from app.proxy_check import check_proxy
 from app.proxy_parser import parse_proxy_line, parse_proxy_text
+from app.python_redirect_engine import PythonRedirectEngine
 from app.routing import RoutingService
 from app.tqk_redirect_engine import TqkRedirectEngine
 from app.windivert_guard import WinDivertGuard
@@ -59,7 +61,7 @@ class MainWindow(QMainWindow):
         self.proxy_cursor = 0
         self.routing = RoutingService()
         self.bot_manager = BotManager(self.routing)
-        self.redirect_engine = TqkRedirectEngine(Path.cwd())
+        self.redirect_engine = self._create_redirect_engine()
         self.windivert_guard = WinDivertGuard()
         self.windivert_status: WinDivertStatus = check_windivert()
         self.proxy_summary: Optional[QLabel] = None
@@ -80,6 +82,11 @@ class MainWindow(QMainWindow):
         self.refresh_timer.setInterval(6000)
         self.refresh_timer.timeout.connect(self.refresh_instances)
         self.refresh_timer.start()
+
+    def _create_redirect_engine(self) -> Any:
+        if os.environ.get("GROWSTONE_REDIRECT_ENGINE", "python").strip().lower() == "tqk":
+            return TqkRedirectEngine(Path.cwd())
+        return PythonRedirectEngine(Path.cwd())
 
     def _build_ui(self) -> None:
         root = QWidget()
