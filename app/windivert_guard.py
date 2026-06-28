@@ -20,12 +20,14 @@ class GuardStats:
     blocked_udp: int = 0
     allowed_dns: int = 0
     protected_pids: int = 0
+    block_public_tcp: bool = True
     last_error: Optional[str] = None
 
 
 @dataclass
 class WinDivertGuard:
     protected_pids: set[int] = field(default_factory=set)
+    block_public_tcp: bool = True
     stats: GuardStats = field(default_factory=GuardStats)
     _thread: Optional[threading.Thread] = None
     _stop_event: threading.Event = field(default_factory=threading.Event)
@@ -36,12 +38,14 @@ class WinDivertGuard:
     def running(self) -> bool:
         return self._thread is not None and self._thread.is_alive()
 
-    def start(self, protected_pids: set[int]) -> None:
+    def start(self, protected_pids: set[int], block_public_tcp: bool = True) -> None:
         self.stop()
         with self._lock:
             self.protected_pids = {pid for pid in protected_pids if pid > 0}
+            self.block_public_tcp = block_public_tcp
             self.stats = GuardStats()
             self.stats.protected_pids = len(self.protected_pids)
+            self.stats.block_public_tcp = block_public_tcp
         if not self.protected_pids:
             return
 
@@ -61,10 +65,13 @@ class WinDivertGuard:
             self._thread.join(timeout=2)
             self._thread = None
 
-    def update_pids(self, protected_pids: set[int]) -> None:
+    def update_pids(self, protected_pids: set[int], block_public_tcp: Optional[bool] = None) -> None:
         with self._lock:
             self.protected_pids = {pid for pid in protected_pids if pid > 0}
             self.stats.protected_pids = len(self.protected_pids)
+            if block_public_tcp is not None:
+                self.block_public_tcp = block_public_tcp
+                self.stats.block_public_tcp = block_public_tcp
 
     def _run(self) -> None:
         tcp_map: dict[tuple[str, int], int] = {}
@@ -111,9 +118,15 @@ class WinDivertGuard:
         with self._lock:
             return set(self.protected_pids)
 
+    def _block_public_tcp_snapshot(self) -> bool:
+        with self._lock:
+            return self.block_public_tcp
+
     def _should_block(self, packet: object) -> bool:
         if packet.udp is not None:
             return not self._is_dns_packet(packet)
+        if not self._block_public_tcp_snapshot():
+            return False
         if not self._is_public_destination(packet.dst_addr):
             return False
         return packet.tcp is not None

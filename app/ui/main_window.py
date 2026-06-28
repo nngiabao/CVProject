@@ -35,6 +35,7 @@ from app.process_utils import ldplayer_related_pids
 from app.proxy_check import check_http_proxy_public_ip, check_proxy
 from app.proxy_parser import parse_proxy_line, parse_proxy_text
 from app.routing import RoutingService
+from app.tun2socks_engine import Tun2SocksEngine
 from app.windivert_guard import WinDivertGuard
 from app.windivert_support import WinDivertStatus, check_windivert
 
@@ -55,6 +56,7 @@ class MainWindow(QMainWindow):
         self.proxy_cursor = 0
         self.routing = RoutingService()
         self.bot_manager = BotManager(self.routing)
+        self.tunnel_engine = Tun2SocksEngine(Path.cwd())
         self.windivert_guard = WinDivertGuard()
         self.windivert_status: WinDivertStatus = check_windivert()
         self.proxy_summary: Optional[QLabel] = None
@@ -739,6 +741,7 @@ class MainWindow(QMainWindow):
         applied_routes: list[str] = []
         started_indexes: list[int] = []
         started = 0
+        started_proxy: Optional[ProxyConfig] = None
         for instance_index in indexes:
             person = self.bot_manager.person(instance_index)
             proxy = person.proxy
@@ -755,6 +758,12 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: proxy check failed ({status})")
                 continue
             try:
+                if started_proxy is None:
+                    self.tunnel_engine.start(proxy)
+                    started_proxy = proxy
+                elif proxy != started_proxy:
+                    failures.append("Start instances with the same proxy together, or start them one at a time.")
+                    continue
                 session = self.bot_manager.start_routing(instance_index)
                 person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
                 if person.proxy_check[0] != "Bridge OK":
@@ -763,7 +772,10 @@ class MainWindow(QMainWindow):
                         f"Instance {instance_index}: local proxy bridge failed ({person.proxy_check[1]})"
                     )
                     continue
-                applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
+                clear_error = self._clear_emulator_proxy(instance_index)
+                if clear_error:
+                    raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
+                applied_proxy = "tun2socks"
                 applied_routes.append(f"Instance {instance_index}: {applied_proxy} -> {person.proxy_check[1]}")
                 started_indexes.append(instance_index)
                 started += 1
@@ -777,6 +789,7 @@ class MainWindow(QMainWindow):
             for instance_index in started_indexes:
                 self.bot_manager.stop_routing(instance_index)
                 self._clear_emulator_proxy(instance_index)
+            self.tunnel_engine.stop()
             started = 0
             applied_routes.clear()
             failures.append(f"WinDivert kill switch is not active: {self._protection_failure_message()}")
@@ -796,6 +809,8 @@ class MainWindow(QMainWindow):
             self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)
         self._update_windivert_guard()
+        if not self.bot_manager.routed_indexes():
+            self.tunnel_engine.stop()
         self._render_instances()
         self.statusBar().showMessage(f"Stopped proxy routing for {len(indexes)} instance(s)", 5000)
 
@@ -838,12 +853,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Routing protected",
-                "Local authenticated proxy routing is running, and the WinDivert kill switch is active "
+                "tun2socks proxy routing is running, and the WinDivert leak guard is active "
                 "for LDPlayer-related process IDs.\n\n"
-                f"Android proxy applied:\n{applied_text}\n\n"
-                "Direct public TCP traffic and UDP leaks from protected LDPlayer processes will be blocked. "
+                f"Proxy route:\n{applied_text}\n\n"
+                "UDP leaks from protected LDPlayer processes will be blocked. "
                 "UDP DNS port 53 is allowed for name resolution. "
-                "Transparent redirect is still the next layer.",
+                "TCP is expected to use the tun2socks route.",
             )
         else:
             final_status += f" - kill switch failed: {self._protection_failure_message()}"
@@ -855,11 +870,11 @@ class MainWindow(QMainWindow):
             self.windivert_guard.stop()
             return True
         if self.windivert_guard.running:
-            self.windivert_guard.update_pids(pids)
+            self.windivert_guard.update_pids(pids, block_public_tcp=not self.tunnel_engine.running)
             return True
         self.windivert_status = check_windivert()
         if self.windivert_status.available:
-            self.windivert_guard.start(pids)
+            self.windivert_guard.start(pids, block_public_tcp=not self.tunnel_engine.running)
             time_limit = time.monotonic() + 2.0
             while time.monotonic() < time_limit:
                 if self.windivert_guard.running:
@@ -872,6 +887,8 @@ class MainWindow(QMainWindow):
     def _protection_failure_message(self) -> str:
         if self.windivert_guard.stats.last_error:
             return self.windivert_guard.stats.last_error
+        if self.tunnel_engine.last_error:
+            return self.tunnel_engine.last_error
         return self.windivert_status.message
 
     def _active_routed_pids(self) -> set[int]:
@@ -1004,10 +1021,12 @@ class MainWindow(QMainWindow):
             }
 
         try:
+            self.tunnel_engine.start(proxy)
             session = self.bot_manager.start_routing(instance_index)
             person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
             if person.proxy_check[0] != "Bridge OK":
                 self.bot_manager.stop_routing(instance_index)
+                self.tunnel_engine.stop()
                 return {
                     "title": "Proxy routing failed",
                     "warning": (
@@ -1015,10 +1034,14 @@ class MainWindow(QMainWindow):
                         f"({person.proxy_check[1]})."
                     ),
                 }
-            applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
+            clear_error = self._clear_emulator_proxy(instance_index)
+            if clear_error:
+                raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
+            applied_proxy = "tun2socks"
         except Exception as exc:
             self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)
+            self.tunnel_engine.stop()
             return {
                 "title": "Proxy routing failed",
                 "warning": f"Instance {instance_index}: {exc}",
@@ -1033,6 +1056,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._clear_all_emulator_proxies()
+        self.tunnel_engine.stop()
         self.windivert_guard.stop()
         self.bot_manager.clear_all_proxies()
         super().closeEvent(event)
