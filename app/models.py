@@ -19,6 +19,7 @@ class EmulatorInstance:
     state: InstanceState
     pid: Optional[int] = None
     platform: str = "LDPlayer"
+    identity: Optional[str] = None
     proxy: Optional[str] = None
 
 

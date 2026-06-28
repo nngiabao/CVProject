@@ -80,11 +80,11 @@ class LdPlayerProvider(EmulatorProvider):
         if not existing_by_folder:
             return None
 
-        scored = [(cls._instance_count(candidate), candidate) for candidate in existing_by_folder.values()]
-        scored.sort(key=lambda item: item[0], reverse=True)
-        providers = [cls(candidate) for count, candidate in scored if count > 0]
+        detected = [(cls._provider_sort_key(candidate), cls._instance_count(candidate), candidate) for candidate in existing_by_folder.values()]
+        detected.sort(key=lambda item: item[0])
+        providers = [cls(candidate) for _, count, candidate in detected if count > 0]
         if not providers:
-            return cls(scored[0][1])
+            return cls(detected[0][2])
         if len(providers) == 1:
             return providers[0]
         return MultiLdPlayerProvider(providers)
@@ -107,6 +107,10 @@ class LdPlayerProvider(EmulatorProvider):
         if result.returncode != 0:
             return 0
         return sum(1 for line in result.stdout.splitlines() if cls._line_has_instance_index(line))
+
+    @staticmethod
+    def _provider_sort_key(console_path: Path) -> str:
+        return os.path.normcase(str(console_path.parent.resolve()))
 
     @staticmethod
     def _line_has_instance_index(line: str) -> bool:
@@ -220,6 +224,7 @@ class LdPlayerProvider(EmulatorProvider):
                     state=state,
                     pid=pid if process_alive else None,
                     platform=self._platform_label(provider_slot),
+                    identity=self._instance_identity(local_index),
                 )
             )
         return instances
@@ -240,6 +245,9 @@ class LdPlayerProvider(EmulatorProvider):
         if provider_slot <= 0:
             return "LDPlayer"
         return f"LDPlayer {self.console_path.parent.name}"
+
+    def _instance_identity(self, local_index: int) -> str:
+        return f"ldplayer:{os.path.normcase(str(self.console_path.parent))}:{local_index}"
 
     @classmethod
     def _running_pid_from_fields(cls, fields: list[str]) -> Optional[int]:

@@ -66,8 +66,9 @@ class MainWindow(QMainWindow):
         self.resize(1240, 760)
         self.setMinimumSize(980, 620)
         self._build_ui()
-        self._load_proxy_assignments()
         self.refresh_instances()
+        self._load_proxy_assignments()
+        self._render_instances()
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(6000)
         self.refresh_timer.timeout.connect(self.refresh_instances)
@@ -621,10 +622,9 @@ class MainWindow(QMainWindow):
         loaded = 0
         errors: list[str] = []
         for instance_key, proxy_url in raw_assignments.items():
-            try:
-                instance_index = int(instance_key)
-            except (TypeError, ValueError):
-                errors.append(f"{instance_key}: invalid instance index")
+            instance_index = self._instance_index_for_assignment_key(instance_key)
+            if instance_index is None:
+                errors.append(f"{instance_key}: instance not found")
                 continue
             if not isinstance(proxy_url, str):
                 errors.append(f"Instance {instance_index}: proxy must be text")
@@ -645,13 +645,17 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"Loaded {loaded} saved proxy assignment(s)", 5000)
         if errors:
             QMessageBox.warning(self, "Some saved assignments were skipped", "\n".join(errors[:10]))
+        if loaded:
+            self._save_proxy_assignments()
 
     def _save_proxy_assignments(self) -> None:
-        assignments = {
-            str(instance_index): person.proxy.connection_url
-            for instance_index, person in sorted(self.bot_manager.people.items())
-            if person.proxy is not None
-        }
+        assignments = {}
+        for instance_index, person in sorted(self.bot_manager.people.items()):
+            if person.proxy is None:
+                continue
+            key = self._assignment_key(instance_index)
+            if key is not None:
+                assignments[key] = person.proxy.connection_url
         try:
             if assignments:
                 self.proxy_assignment_file.write_text(
@@ -662,6 +666,25 @@ class MainWindow(QMainWindow):
                 self.proxy_assignment_file.unlink()
         except OSError as exc:
             QMessageBox.warning(self, "Proxy assignment error", f"Could not save assignments: {exc}")
+
+    def _assignment_key(self, instance_index: int) -> Optional[str]:
+        instance = self._instance_by_index(instance_index)
+        if instance is not None and instance.identity:
+            return instance.identity
+        return str(instance_index)
+
+    def _instance_index_for_assignment_key(self, key: object) -> Optional[int]:
+        if isinstance(key, str):
+            for instance in self.instances:
+                if instance.identity == key:
+                    return instance.index
+            try:
+                return int(key)
+            except ValueError:
+                return None
+        if isinstance(key, int):
+            return key
+        return None
 
     def _choose_proxy_assignment(self, selected_count: int) -> tuple[Optional[str], Optional[ProxyConfig]]:
         proxy_items = [f"{index + 1}. {proxy.host}:{proxy.port}" for index, proxy in enumerate(self.proxies)]
