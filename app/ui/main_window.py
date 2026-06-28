@@ -701,7 +701,9 @@ class MainWindow(QMainWindow):
     def _protection_label(self) -> str:
         if self.windivert_guard.running:
             return "Protection: Kill switch on"
-        return "Protection: WinDivert ready" if self.windivert_status.available else "Protection: Bridge only"
+        if self.windivert_status.available:
+            return "Protection: WinDivert ready"
+        return f"Protection: {self.windivert_status.message}"
 
     def _show_routing_status(self, started: int, applied_routes: list[str]) -> None:
         applied_text = "\n".join(applied_routes[:8])
@@ -739,6 +741,7 @@ class MainWindow(QMainWindow):
         if not pids:
             self.windivert_guard.stop()
             return
+        self.windivert_status = check_windivert()
         if self.windivert_guard.running:
             self.windivert_guard.update_pids(pids)
         elif self.windivert_status.available:

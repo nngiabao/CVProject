@@ -3,6 +3,8 @@ from __future__ import annotations
 from dataclasses import dataclass
 from importlib.util import find_spec
 
+from app.admin import is_administrator
+
 
 @dataclass(frozen=True)
 class WinDivertStatus:
@@ -11,6 +13,12 @@ class WinDivertStatus:
 
 
 def check_windivert() -> WinDivertStatus:
+    if not is_administrator():
+        return WinDivertStatus(
+            available=False,
+            message="Administrator access is required before WinDivert can start.",
+        )
+
     if find_spec("pydivert") is None:
         return WinDivertStatus(
             available=False,
