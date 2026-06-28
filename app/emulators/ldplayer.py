@@ -376,7 +376,12 @@ class LdPlayerProvider(EmulatorProvider):
                 return self._run("adb", "--index", str(index), "--command", command)
             except RuntimeError as exc:
                 last_error = exc
-                self._repair_missing_adb_device(str(exc))
+                if _is_transient_adb_error(str(exc)):
+                    try:
+                        return self._adb_direct_serial(index, command)
+                    except RuntimeError:
+                        pass
+                self._repair_missing_adb_device(str(exc), index)
                 if not _is_transient_adb_error(str(exc)) or attempt == 3:
                     break
                 time.sleep(1)
@@ -384,11 +389,23 @@ class LdPlayerProvider(EmulatorProvider):
             raise last_error
         raise RuntimeError("LDPlayer ADB command failed")
 
-    def _repair_missing_adb_device(self, message: str) -> None:
+    def _adb_direct_serial(self, index: int, command: str) -> str:
+        serial = self._localhost_adb_serial(index)
+        self._run("adb", "--command", f"connect {serial}")
+        return self._run("adb", "--command", f"-s {serial} {command}")
+
+    @staticmethod
+    def _localhost_adb_serial(index: int) -> str:
+        return f"127.0.0.1:{5555 + (index * 2)}"
+
+    def _repair_missing_adb_device(self, message: str, index: int) -> None:
         match = re.search(r"device 'emulator-(\d+)' not found", message)
-        if not match:
+        if match:
+            port = int(match.group(1)) + 1
+        else:
+            port = 5555 + (index * 2)
+        if port <= 0:
             return
-        port = int(match.group(1)) + 1
         try:
             self._run("adb", "--command", f"connect 127.0.0.1:{port}")
         except RuntimeError:
