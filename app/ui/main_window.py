@@ -588,23 +588,30 @@ class MainWindow(QMainWindow):
         if assignment_mode is None:
             return
 
+        clear_failures: list[str] = []
         if assignment_mode == "single":
             proxy = selected_proxy
             if proxy is None:
                 return
             for instance_index in indexes:
-                self._clear_emulator_proxy(instance_index)
+                clear_error = self._clear_emulator_proxy(instance_index)
+                if clear_error:
+                    clear_failures.append(f"Instance {instance_index}: {clear_error}")
                 self.bot_manager.assign_proxy(instance_index, proxy, self._check_proxy(proxy))
         else:
             for position, instance_index in enumerate(indexes):
                 proxy_index = (self.proxy_cursor + position) % len(self.proxies)
                 proxy = self.proxies[proxy_index]
-                self._clear_emulator_proxy(instance_index)
+                clear_error = self._clear_emulator_proxy(instance_index)
+                if clear_error:
+                    clear_failures.append(f"Instance {instance_index}: {clear_error}")
                 self.bot_manager.assign_proxy(instance_index, proxy, self._check_proxy(proxy))
             self.proxy_cursor += len(indexes)
         self._save_proxy_assignments()
         self._update_windivert_guard()
         self._render_instances()
+        if clear_failures:
+            QMessageBox.warning(self, "Some Android proxies were not cleared", "\n".join(clear_failures[:10]))
         self.statusBar().showMessage(f"Assigned proxies to {len(indexes)} instance(s)", 5000)
 
     def _load_proxy_assignments(self) -> None:
@@ -851,11 +858,12 @@ class MainWindow(QMainWindow):
             return f"{instance.platform}:{local_index}"
         return str(instance.index)
 
-    def _clear_emulator_proxy(self, instance_index: int) -> None:
+    def _clear_emulator_proxy(self, instance_index: int) -> Optional[str]:
         try:
             self.provider.clear_http_proxy(instance_index)
-        except Exception:
-            pass
+        except Exception as exc:
+            return str(exc)
+        return None
 
     def _clear_all_emulator_proxies(self) -> None:
         for instance_index in list(self.bot_manager.routed_indexes()):

@@ -341,18 +341,28 @@ class LdPlayerProvider(EmulatorProvider):
     def clear_http_proxy(self, index: int) -> None:
         try:
             self._wait_for_adb(index, timeout=10)
+        except RuntimeError as exc:
+            raise RuntimeError(f"ADB is not ready while clearing Android proxy for instance {index}: {exc}")
+        try:
+            self._adb(index, "reverse --remove-all")
         except RuntimeError:
-            return
-        current_proxy = self.get_http_proxy(index)
-        _, _, port_text = current_proxy.rpartition(":")
-        if port_text.isdigit():
+            pass
+
+        errors: list[str] = []
+        commands = (
+            "shell settings put global http_proxy :0",
+            "shell settings delete global http_proxy",
+            "shell settings delete global global_http_proxy_host",
+            "shell settings delete global global_http_proxy_port",
+            "shell settings delete global global_http_proxy_exclusion_list",
+        )
+        for command in commands:
             try:
-                self._adb(index, f"reverse --remove tcp:{port_text}")
-            except RuntimeError:
-                pass
-        self._adb(index, "shell settings put global http_proxy :0")
-        self._adb(index, "shell settings delete global global_http_proxy_host")
-        self._adb(index, "shell settings delete global global_http_proxy_port")
+                self._adb(index, command)
+            except RuntimeError as exc:
+                errors.append(f"{command}: {exc}")
+        if len(errors) == len(commands):
+            raise RuntimeError("Could not clear Android proxy. " + " | ".join(errors))
 
     def get_http_proxy(self, index: int) -> str:
         self._wait_for_adb(index, timeout=30)
