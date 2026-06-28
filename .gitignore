@@ -7,7 +7,4 @@ dist/
 .env
 .proxy_source.txt
 .proxy_assignments.json
-.ldplayer_nat_map.json
-tools/tqk_redirector/*
-!tools/tqk_redirector/README.md
-tools/tqk_redirector/logs/
+tools/tun2socks/logs/

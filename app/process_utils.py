@@ -19,10 +19,6 @@ def ldplayer_related_pids() -> set[int]:
     return _process_pids_matching(LDPLAYER_PROCESS_MARKERS)
 
 
-def vbox_nat_pids() -> set[int]:
-    return _process_pids_matching(("vboxnetnat",))
-
-
 def _process_pids_matching(markers: tuple[str, ...]) -> set[int]:
     try:
         result = subprocess.run(

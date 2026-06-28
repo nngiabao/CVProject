@@ -2,8 +2,8 @@
 
 Python desktop application for managing LDPlayer instances and assigning proxy
 configurations. It includes emulator discovery and lifecycle controls, proxy
-import/assignment, and per-instance WinDivert routing through assigned SOCKS5
-proxies.
+import/assignment, and a Wintun/tun2socks tunnel through assigned SOCKS5
+proxies with a WinDivert leak guard.
 
 ## Run
 
@@ -17,7 +17,8 @@ python main.py
 ```
 
 On Windows, the application automatically requests Administrator access through
-UAC. LDPlayer control and WinDivert protection require elevation.
+UAC. LDPlayer control, Wintun routing, and WinDivert protection require
+elevation.
 
 The application searches common LDPlayer installation folders. Set
 `LDPLAYER_CONSOLE` to the full path of `dnconsole.exe` or `ldconsole.exe` when
@@ -48,22 +49,21 @@ instance has an assigned SOCKS5 proxy.
 ## Routing workflow
 
 Use **Start proxy routing** after assigning proxies to selected instances. The
-app starts one Tqk WinDivert redirector process per selected LDPlayer PID. TCP
-traffic from that emulator process is redirected through the assigned SOCKS5
-proxy. Secure DNS is enabled through DoH, unhandled UDP is blocked by the helper,
-and IPv6 from the target process is blocked to prevent fallback leaks.
+app starts `tools/tun2socks/tun2socks.exe` with `wintun.dll`, creates the
+`GrowStoneTun` Wintun adapter, and sends IPv4 traffic through the assigned
+SOCKS5 proxy.
 
 The app clears Android's global HTTP proxy setting before routing starts. LDPlayer
-does not need manual Wi-Fi proxy configuration; the redirect happens from Windows
-by process ID.
+does not need manual Wi-Fi proxy configuration; the tunnel happens from Windows.
 
-WinDivert support uses `pydivert` and requires the app to run as Administrator.
-The Tqk redirector runtime is expected under `tools/tqk_redirector`, or the
-`TQK_REDIRECTOR_EXE` environment variable can point to another build.
+The tunnel is system-level, so only one SOCKS5 proxy can own it at a time. If you
+need to change to another proxy, stop proxy routing first and then start it again
+with the new assignment.
 
 When **Start proxy routing** is used on running LDPlayer instances, the app also
-enables a Python-side leak guard for those instance PIDs. It blocks direct UDP
-leaks while the Tqk helper owns the TCP route.
+enables a Python-side WinDivert leak guard for those instance PIDs. It blocks
+unhandled UDP traffic, and if the tunnel is not running it also blocks direct
+public TCP so the emulator should lose internet instead of exposing the real IP.
 
 ## Bot model
 

@@ -1,8 +1,6 @@
 from __future__ import annotations
 
 import json
-import os
-import subprocess
 import threading
 import time
 from typing import Any, Optional
@@ -33,12 +31,11 @@ from PySide6.QtWidgets import (
 from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
 from app.models import EmulatorInstance, InstanceState, ProxyConfig
-from app.process_utils import ldplayer_related_pids, vbox_nat_pids
+from app.process_utils import ldplayer_related_pids
 from app.proxy_check import check_proxy
 from app.proxy_parser import parse_proxy_line, parse_proxy_text
-from app.python_redirect_engine import PythonRedirectEngine
 from app.routing import RoutingService
-from app.tqk_redirect_engine import TqkRedirectEngine
+from app.tun2socks_engine import Tun2SocksEngine
 from app.windivert_guard import WinDivertGuard
 from app.windivert_support import WinDivertStatus, check_windivert
 
@@ -54,14 +51,12 @@ class MainWindow(QMainWindow):
         self.provider = provider
         self.proxy_source_file = Path.cwd() / ".proxy_source.txt"
         self.proxy_assignment_file = Path.cwd() / ".proxy_assignments.json"
-        self.nat_map_file = Path.cwd() / ".ldplayer_nat_map.json"
-        self.nat_pid_map: dict[str, int] = {}
         self.instances: list[EmulatorInstance] = []
         self.proxies: list[ProxyConfig] = []
         self.proxy_cursor = 0
         self.routing = RoutingService()
         self.bot_manager = BotManager(self.routing)
-        self.redirect_engine = self._create_redirect_engine()
+        self.redirect_engine = Tun2SocksEngine(Path.cwd())
         self.windivert_guard = WinDivertGuard()
         self.windivert_status: WinDivertStatus = check_windivert()
         self.proxy_summary: Optional[QLabel] = None
@@ -74,7 +69,6 @@ class MainWindow(QMainWindow):
         self.resize(1240, 760)
         self.setMinimumSize(980, 620)
         self._build_ui()
-        self._load_nat_pid_map()
         self.refresh_instances()
         self._load_proxy_assignments()
         self._render_instances()
@@ -82,11 +76,6 @@ class MainWindow(QMainWindow):
         self.refresh_timer.setInterval(6000)
         self.refresh_timer.timeout.connect(self.refresh_instances)
         self.refresh_timer.start()
-
-    def _create_redirect_engine(self) -> Any:
-        if os.environ.get("GROWSTONE_REDIRECT_ENGINE", "python").strip().lower() == "tqk":
-            return TqkRedirectEngine(Path.cwd())
-        return PythonRedirectEngine(Path.cwd())
 
     def _build_ui(self) -> None:
         root = QWidget()
@@ -273,7 +262,7 @@ class MainWindow(QMainWindow):
             person = self.bot_manager.person(instance.index)
             assigned = person.proxy
             is_routed = instance.index in self.bot_manager.routed_indexes()
-            route_target = self._format_pids(self._redirect_pids(instance)) if is_routed else "Off"
+            route_target = "Tunnel" if is_routed else "Off"
             values = (
                 instance.name,
                 "",
@@ -305,7 +294,7 @@ class MainWindow(QMainWindow):
                 if column == 4:
                     running_colors = {
                         "Running": "#198754",
-                        "Redirected": "#198754",
+                        "Tunnel": "#198754",
                         "Routed": "#198754",
                         "Bridge OK": "#198754",
                         "Not running": "#d64550",
@@ -338,17 +327,17 @@ class MainWindow(QMainWindow):
             (
                 QStyle.SP_MediaPlay,
                 "Start",
-                lambda: self._run_instance_action(instance_index, self._start_instance_with_nat_mapping, "started"),
+                lambda: self._run_instance_action(instance_index, self.provider.start, "started"),
             ),
             (
                 QStyle.SP_MediaStop,
                 "Stop",
-                lambda: self._run_instance_action(instance_index, self._stop_instance_and_clear_nat_mapping, "stopped"),
+                lambda: self._run_instance_action(instance_index, self.provider.stop, "stopped"),
             ),
             (
                 QStyle.SP_BrowserReload,
                 "Restart",
-                lambda: self._run_instance_action(instance_index, self._restart_instance_with_nat_mapping, "restarted"),
+                lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted"),
             ),
         )
         for icon_name, tooltip, callback in actions:
@@ -445,166 +434,12 @@ class MainWindow(QMainWindow):
         for label, value in zip(self.bot_metrics, values):
             label.setText(value)
 
-    @staticmethod
-    def _format_pids(pids: set[int]) -> str:
-        if not pids:
-            return "Off"
-        values = sorted(pids)
-        if len(values) <= 3:
-            return "PIDs " + ", ".join(str(pid) for pid in values)
-        return "PIDs " + ", ".join(str(pid) for pid in values[:3]) + f" +{len(values) - 3}"
-
-    def _redirect_pids(self, instance: EmulatorInstance) -> set[int]:
-        mapped_pid = self._mapped_nat_pid(instance)
-        return {mapped_pid} if mapped_pid is not None else set()
-
     def _protected_pids(self, instance: EmulatorInstance) -> set[int]:
-        return instance.live_pids() | self._redirect_pids(instance)
-
-    def _missing_nat_mapping(self, instance: EmulatorInstance) -> bool:
-        return bool(vbox_nat_pids()) and self._mapped_nat_pid(instance) is None
-
-    def _ensure_nat_mapping(self, instance: EmulatorInstance) -> Optional[int]:
-        mapped_pid = self._mapped_nat_pid(instance)
-        if mapped_pid is not None:
-            return mapped_pid
-        if not instance.identity:
-            return None
-
-        current_nat_pids = vbox_nat_pids()
-        if not current_nat_pids:
-            return None
-
-        self._drop_stale_nat_mappings()
-        used_by_other_instances = {
-            pid
-            for identity, pid in self.nat_pid_map.items()
-            if identity != instance.identity and self._pid_is_alive(pid)
-        }
-        available = sorted(current_nat_pids - used_by_other_instances)
-        if not available:
-            return None
-
-        chosen = available[0]
-        self.nat_pid_map[instance.identity] = chosen
-        self._save_nat_pid_map()
-        return chosen
-
-    def _drop_stale_nat_mappings(self) -> None:
-        stale = [identity for identity, pid in self.nat_pid_map.items() if not self._pid_is_alive(pid)]
-        if not stale:
-            return
-        for identity in stale:
-            self.nat_pid_map.pop(identity, None)
-        self._save_nat_pid_map()
-
-    def _mapped_nat_pid(self, instance: EmulatorInstance) -> Optional[int]:
-        if not instance.identity:
-            return None
-        pid = self.nat_pid_map.get(instance.identity)
-        if pid is None:
-            return None
-        if not self._pid_is_alive(pid):
-            self.nat_pid_map.pop(instance.identity, None)
-            self._save_nat_pid_map()
-            return None
-        return pid
-
-    def _load_nat_pid_map(self) -> None:
-        try:
-            data = json.loads(self.nat_map_file.read_text(encoding="utf-8"))
-        except (OSError, json.JSONDecodeError):
-            self.nat_pid_map = {}
-            self._save_nat_pid_map()
-            return
-        if not isinstance(data, dict):
-            self.nat_pid_map = {}
-            self._save_nat_pid_map()
-            return
-        self.nat_pid_map = {
-            str(identity): int(pid)
-            for identity, pid in data.items()
-            if isinstance(identity, str) and isinstance(pid, int) and self._pid_is_alive(pid)
-        }
-        self._save_nat_pid_map()
-
-    def _save_nat_pid_map(self) -> None:
-        try:
-            self.nat_map_file.write_text(json.dumps(self.nat_pid_map, indent=2), encoding="utf-8")
-        except OSError:
-            return
-
-    def _start_instance_with_nat_mapping(self, instance_index: int) -> None:
-        before = vbox_nat_pids()
-        self.provider.start(instance_index)
-        self._map_nat_pid_after_start(instance_index, before)
-
-    def _restart_instance_with_nat_mapping(self, instance_index: int) -> None:
-        self._clear_nat_mapping(instance_index)
-        before = vbox_nat_pids()
-        self.provider.restart(instance_index)
-        self._map_nat_pid_after_start(instance_index, before)
-
-    def _stop_instance_and_clear_nat_mapping(self, instance_index: int) -> None:
-        self._clear_nat_mapping(instance_index)
-        self.provider.stop(instance_index)
-
-    def _map_nat_pid_after_start(self, instance_index: int, before: set[int]) -> None:
-        deadline = time.monotonic() + 12.0
-        chosen: Optional[int] = None
-        while time.monotonic() < deadline:
-            new_pids = vbox_nat_pids() - before
-            if new_pids:
-                chosen = sorted(new_pids)[-1]
-                break
-            time.sleep(0.5)
-        if chosen is None:
-            return
-        identity = self._instance_identity_for_index(instance_index)
-        if identity is None:
-            return
-        self.nat_pid_map[identity] = chosen
-        self._save_nat_pid_map()
-
-    def _clear_nat_mapping(self, instance_index: int) -> None:
-        identity = self._instance_identity_for_index(instance_index)
-        if identity is None:
-            return
-        if identity in self.nat_pid_map:
-            self.nat_pid_map.pop(identity, None)
-            self._save_nat_pid_map()
-
-    def _instance_identity_for_index(self, instance_index: int) -> Optional[str]:
-        instance = self._instance_by_index(instance_index)
-        if instance is not None and instance.identity:
-            return instance.identity
-        if hasattr(self.provider, "_instance_identity"):
-            try:
-                return str(self.provider._instance_identity(instance_index))
-            except Exception:
-                return None
-        return None
-
-    @staticmethod
-    def _pid_is_alive(pid: int) -> bool:
-        try:
-            result = subprocess.run(
-                ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
-                check=False,
-                capture_output=True,
-                text=True,
-                encoding="utf-8",
-                errors="replace",
-                creationflags=subprocess.CREATE_NO_WINDOW,
-                timeout=5,
-            )
-        except (OSError, subprocess.SubprocessError):
-            return False
-        return result.returncode == 0 and f'"{pid}"' in result.stdout
+        return instance.live_pids()
 
     def _start_task_after_routing(self, instance_index: int, task_row: int) -> None:
         instance = self._instance_by_index(instance_index)
-        if instance is None or not (instance.live_pids() or self._redirect_pids(instance)):
+        if instance is None or not instance.live_pids():
             QMessageBox.information(
                 self,
                 "Start LDPlayer first",
@@ -923,13 +758,7 @@ class MainWindow(QMainWindow):
                 continue
             instance = self._instance_by_index(instance_index)
             if instance is None or not instance.live_pids():
-                failures.append(f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection")
-                continue
-            nat_pid = self._ensure_nat_mapping(instance)
-            if vbox_nat_pids() and nat_pid is None:
-                failures.append(
-                    f"Instance {instance_index}: no available VBoxNetNAT PID in the NAT pool"
-                )
+                failures.append(f"Instance {instance_index}: start LDPlayer before enabling tunnel protection")
                 continue
             status, proxy_ip = self._check_proxy(proxy)
             person.proxy_check = (status, proxy_ip)
@@ -937,15 +766,15 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: proxy check failed ({status})")
                 continue
             try:
-                route_pids = self._redirect_pids(instance)
+                route_pids = instance.live_pids()
                 self.redirect_engine.start_many(instance_index, route_pids, proxy)
                 self.bot_manager.start_direct_routing(instance_index)
                 clear_error = self._clear_emulator_proxy(instance_index)
                 if clear_error:
-                    raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
-                person.proxy_check = ("Redirected", proxy_ip)
+                    raise RuntimeError(f"Could not clear Android proxy after tunnel start: {clear_error}")
+                person.proxy_check = ("Tunnel", proxy_ip)
                 applied_routes.append(
-                    f"Instance {instance_index}: {self._format_pids(route_pids)} -> {proxy.host}"
+                    f"Instance {instance_index}: Wintun -> {proxy.host}"
                 )
                 started_indexes.append(instance_index)
                 started += 1
@@ -1022,11 +851,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Routing protected",
-                "Tqk WinDivert proxy routing is running, and the leak guard is active "
+                "Wintun/tun2socks tunnel is running, and the leak guard is active "
                 "for LDPlayer-related process IDs.\n\n"
-                f"Proxy route:\n{applied_text}\n\n"
-                "TCP is redirected through the assigned SOCKS proxy. "
-                "DNS is handled through secure DNS, and unhandled UDP/IPv6 traffic is blocked.",
+                f"Tunnel route:\n{applied_text}\n\n"
+                "TCP should leave through the assigned SOCKS proxy. "
+                "Unhandled UDP traffic is blocked for protected emulator processes.",
             )
         else:
             final_status += f" - kill switch failed: {self._protection_failure_message()}"
@@ -1063,12 +892,12 @@ class MainWindow(QMainWindow):
         instance_pids = self.bot_manager.routed_pids()
         if not instance_pids:
             return set()
-        mapped_nat_pids: set[int] = set()
+        protected_pids: set[int] = set()
         for instance_index in self.bot_manager.routed_indexes():
             instance = self._instance_by_index(instance_index)
             if instance is not None:
-                mapped_nat_pids.update(self._protected_pids(instance))
-        return instance_pids | mapped_nat_pids | ldplayer_related_pids()
+                protected_pids.update(self._protected_pids(instance))
+        return instance_pids | protected_pids | ldplayer_related_pids()
 
     def _instance_by_index(self, instance_index: int) -> Optional[EmulatorInstance]:
         return next((instance for instance in self.instances if instance.index == instance_index), None)
@@ -1196,24 +1025,18 @@ class MainWindow(QMainWindow):
         if instance is None or not instance.live_pids():
             return {
                 "title": "Proxy routing failed",
-                "warning": f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection.",
-            }
-        nat_pid = self._ensure_nat_mapping(instance)
-        if vbox_nat_pids() and nat_pid is None:
-            return {
-                "title": "Proxy routing failed",
-                "warning": f"Instance {instance_index}: no available VBoxNetNAT PID in the NAT pool.",
+                "warning": f"Instance {instance_index}: start LDPlayer before enabling tunnel protection.",
             }
 
         try:
-            route_pids = self._redirect_pids(instance)
+            route_pids = instance.live_pids()
             self.redirect_engine.start_many(instance_index, route_pids, proxy)
             self.bot_manager.start_direct_routing(instance_index)
             clear_error = self._clear_emulator_proxy(instance_index)
             if clear_error:
-                raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
-            person.proxy_check = ("Redirected", proxy_ip)
-            applied_proxy = self._format_pids(route_pids)
+                raise RuntimeError(f"Could not clear Android proxy after tunnel start: {clear_error}")
+            person.proxy_check = ("Tunnel", proxy_ip)
+            applied_proxy = "Wintun"
         except Exception as exc:
             self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)
@@ -1225,7 +1048,7 @@ class MainWindow(QMainWindow):
 
         return {
             "message": (
-                f"Bot task started proxy route for instance {instance_index}: "
+                f"Bot task started tunnel route for instance {instance_index}: "
                 f"{applied_proxy} -> {person.proxy_check[1]}"
             )
         }
