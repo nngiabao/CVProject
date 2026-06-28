@@ -1,10 +1,9 @@
 # Emulator Proxy Manager
 
 Python desktop application for managing LDPlayer instances and assigning proxy
-configurations. Phase 1 includes emulator discovery and lifecycle controls plus
-proxy import, assignment, and in-app local proxy routing. Transparent
-WinDivert interception and kill-switch routing will be added behind the same UI
-workflow in a later phase.
+configurations. It includes emulator discovery and lifecycle controls, proxy
+import/assignment, and per-instance WinDivert routing through assigned SOCKS5
+proxies.
 
 ## Run
 
@@ -18,8 +17,7 @@ python main.py
 ```
 
 On Windows, the application automatically requests Administrator access through
-UAC. LDPlayer control, ADB proxy setup, and WinDivert protection require
-elevation.
+UAC. LDPlayer control and WinDivert protection require elevation.
 
 The application searches common LDPlayer installation folders. Set
 `LDPLAYER_CONSOLE` to the full path of `dnconsole.exe` or `ldconsole.exe` when
@@ -50,31 +48,22 @@ instance has an assigned SOCKS5 proxy.
 ## Routing workflow
 
 Use **Start proxy routing** after assigning proxies to selected instances. The
-app starts one local HTTP proxy bridge per selected instance, using the Windows
-host IP with `19000 + instance index` as the local endpoint. The local endpoint
-does not require authentication; the app authenticates to the assigned Webshare
-SOCKS5 proxy upstream.
+app starts one Tqk WinDivert redirector process per selected LDPlayer PID. TCP
+traffic from that emulator process is redirected through the assigned SOCKS5
+proxy. Secure DNS is enabled through DoH, unhandled UDP is blocked by the helper,
+and IPv6 from the target process is blocked to prevent fallback leaks.
 
-For LDPlayer, the app also attempts to set Android's global HTTP proxy through
-LDPlayer's ADB command so browser traffic inside the emulator can use the local
-bridge. When routing is stopped, the app clears that Android proxy setting.
-If LDPlayer has just been launched, wait until Android is fully booted before
-starting routing; the app will retry ADB for a short period, but proxy setup
-cannot complete while LDPlayer reports `device not found`.
-
-The local bridge is the in-app proxy handler that will sit behind the future
-WinDivert transparent redirect and kill switch. Until that redirect layer is
-added, emulator traffic must be configured to use the displayed local routing
-endpoint.
+The app clears Android's global HTTP proxy setting before routing starts. LDPlayer
+does not need manual Wi-Fi proxy configuration; the redirect happens from Windows
+by process ID.
 
 WinDivert support uses `pydivert` and requires the app to run as Administrator.
-If the app shows **Protection: Bridge only**, transparent redirection is not
-active yet and LDPlayer traffic is not being forced through the proxy.
+The Tqk redirector runtime is expected under `tools/tqk_redirector`, or the
+`TQK_REDIRECTOR_EXE` environment variable can point to another build.
 
-When **Start proxy routing** is used on running LDPlayer instances and WinDivert
-is available, the app enables a kill switch for those instance PIDs. Direct
-public TCP/UDP traffic from protected LDPlayer processes is blocked so the
-instance cannot fall back to the real connection while routing is active.
+When **Start proxy routing** is used on running LDPlayer instances, the app also
+enables a Python-side leak guard for those instance PIDs. It blocks direct UDP
+leaks while the Tqk helper owns the TCP route.
 
 ## Bot model
 

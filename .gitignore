@@ -7,5 +7,5 @@ dist/
 .env
 .proxy_source.txt
 .proxy_assignments.json
-tools/tun2socks/*.exe
-tools/tun2socks/*.dll
+tools/tqk_redirector/*
+!tools/tqk_redirector/README.md

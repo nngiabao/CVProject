@@ -32,10 +32,10 @@ from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
 from app.models import EmulatorInstance, InstanceState, ProxyConfig
 from app.process_utils import ldplayer_related_pids
-from app.proxy_check import check_http_proxy_public_ip, check_proxy
+from app.proxy_check import check_proxy
 from app.proxy_parser import parse_proxy_line, parse_proxy_text
 from app.routing import RoutingService
-from app.tun2socks_engine import Tun2SocksEngine
+from app.tqk_redirect_engine import TqkRedirectEngine
 from app.windivert_guard import WinDivertGuard
 from app.windivert_support import WinDivertStatus, check_windivert
 
@@ -56,7 +56,7 @@ class MainWindow(QMainWindow):
         self.proxy_cursor = 0
         self.routing = RoutingService()
         self.bot_manager = BotManager(self.routing)
-        self.tunnel_engine = Tun2SocksEngine(Path.cwd())
+        self.redirect_engine = TqkRedirectEngine(Path.cwd())
         self.windivert_guard = WinDivertGuard()
         self.windivert_status: WinDivertStatus = check_windivert()
         self.proxy_summary: Optional[QLabel] = None
@@ -261,7 +261,8 @@ class MainWindow(QMainWindow):
         for row, instance in enumerate(self.instances):
             person = self.bot_manager.person(instance.index)
             assigned = person.proxy
-            route = self.bot_manager.session(instance.index)
+            is_routed = instance.index in self.bot_manager.routed_indexes()
+            route_target = f"PID {instance.pid}" if is_routed and instance.pid is not None else "Off"
             values = (
                 instance.name,
                 "",
@@ -269,7 +270,7 @@ class MainWindow(QMainWindow):
                 "Assigned" if assigned else "Unassigned",
                 person.proxy_check[0] if assigned and person.proxy_check else "Not checked" if assigned else "—",
                 person.proxy_check[1] if assigned and person.proxy_check else "—",
-                route.local_proxy if route else "Off",
+                route_target,
             )
             for column, value in enumerate(values):
                 if column == 1:
@@ -293,6 +294,7 @@ class MainWindow(QMainWindow):
                 if column == 4:
                     running_colors = {
                         "Running": "#198754",
+                        "Redirected": "#198754",
                         "Routed": "#198754",
                         "Bridge OK": "#198754",
                         "Not running": "#d64550",
@@ -302,7 +304,7 @@ class MainWindow(QMainWindow):
                     }
                     item.setForeground(QColor(running_colors.get(value, "#69758a")))
                 if column == 6:
-                    item.setForeground(QColor("#198754" if route else "#69758a"))
+                    item.setForeground(QColor("#198754" if is_routed else "#69758a"))
                 self.table.setItem(row, column, item)
 
         running = sum(item.state == InstanceState.RUNNING for item in self.instances)
@@ -374,7 +376,7 @@ class MainWindow(QMainWindow):
             )
             self._render_task_table(instance_index)
             return
-        if enabled and self.bot_manager.session(instance_index) is None:
+        if enabled and instance_index not in self.bot_manager.routed_indexes():
             self._start_task_after_routing(instance_index, item.row())
             self._render_task_table(instance_index)
             return
@@ -741,7 +743,6 @@ class MainWindow(QMainWindow):
         applied_routes: list[str] = []
         started_indexes: list[int] = []
         started = 0
-        started_proxy: Optional[ProxyConfig] = None
         for instance_index in indexes:
             person = self.bot_manager.person(instance_index)
             proxy = person.proxy
@@ -758,28 +759,17 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: proxy check failed ({status})")
                 continue
             try:
-                if started_proxy is None:
-                    self.tunnel_engine.start(proxy)
-                    started_proxy = proxy
-                elif proxy != started_proxy:
-                    failures.append("Start instances with the same proxy together, or start them one at a time.")
-                    continue
-                session = self.bot_manager.start_routing(instance_index)
-                person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
-                if person.proxy_check[0] != "Bridge OK":
-                    self.bot_manager.stop_routing(instance_index)
-                    failures.append(
-                        f"Instance {instance_index}: local proxy bridge failed ({person.proxy_check[1]})"
-                    )
-                    continue
+                self.redirect_engine.start(instance_index, instance.pid, proxy)
+                self.bot_manager.start_direct_routing(instance_index)
                 clear_error = self._clear_emulator_proxy(instance_index)
                 if clear_error:
                     raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
-                applied_proxy = "tun2socks"
-                applied_routes.append(f"Instance {instance_index}: {applied_proxy} -> {person.proxy_check[1]}")
+                person.proxy_check = ("Redirected", proxy_ip)
+                applied_routes.append(f"Instance {instance_index}: PID {instance.pid} -> {proxy.host}")
                 started_indexes.append(instance_index)
                 started += 1
             except Exception as exc:
+                self.redirect_engine.stop(instance_index)
                 self.bot_manager.stop_routing(instance_index)
                 self._clear_emulator_proxy(instance_index)
                 failures.append(f"Instance {instance_index}: {exc}")
@@ -787,9 +777,9 @@ class MainWindow(QMainWindow):
         guard_ready = self._update_windivert_guard()
         if started and not guard_ready:
             for instance_index in started_indexes:
+                self.redirect_engine.stop(instance_index)
                 self.bot_manager.stop_routing(instance_index)
                 self._clear_emulator_proxy(instance_index)
-            self.tunnel_engine.stop()
             started = 0
             applied_routes.clear()
             failures.append(f"WinDivert kill switch is not active: {self._protection_failure_message()}")
@@ -806,11 +796,12 @@ class MainWindow(QMainWindow):
             return
 
         for instance_index in indexes:
+            self.redirect_engine.stop(instance_index)
             self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)
         self._update_windivert_guard()
         if not self.bot_manager.routed_indexes():
-            self.tunnel_engine.stop()
+            self.redirect_engine.stop_all()
         self._render_instances()
         self.statusBar().showMessage(f"Stopped proxy routing for {len(indexes)} instance(s)", 5000)
 
@@ -834,9 +825,6 @@ class MainWindow(QMainWindow):
     def _check_proxy(self, proxy: ProxyConfig) -> tuple[str, str]:
         return check_proxy(proxy)
 
-    def _check_routed_public_ip(self, host: str, port: int) -> tuple[str, str]:
-        return check_http_proxy_public_ip(host, port)
-
     def _protection_label(self) -> str:
         if self.windivert_guard.running:
             return "Protection: Kill switch on"
@@ -853,12 +841,11 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Routing protected",
-                "tun2socks proxy routing is running, and the WinDivert leak guard is active "
+                "Tqk WinDivert proxy routing is running, and the leak guard is active "
                 "for LDPlayer-related process IDs.\n\n"
                 f"Proxy route:\n{applied_text}\n\n"
-                "UDP leaks from protected LDPlayer processes will be blocked. "
-                "UDP DNS port 53 is allowed for name resolution. "
-                "TCP is expected to use the tun2socks route.",
+                "TCP is redirected through the assigned SOCKS proxy. "
+                "DNS is handled through secure DNS, and unhandled UDP/IPv6 traffic is blocked.",
             )
         else:
             final_status += f" - kill switch failed: {self._protection_failure_message()}"
@@ -870,11 +857,11 @@ class MainWindow(QMainWindow):
             self.windivert_guard.stop()
             return True
         if self.windivert_guard.running:
-            self.windivert_guard.update_pids(pids, block_public_tcp=not self.tunnel_engine.running)
+            self.windivert_guard.update_pids(pids, block_public_tcp=not self.redirect_engine.running)
             return True
         self.windivert_status = check_windivert()
         if self.windivert_status.available:
-            self.windivert_guard.start(pids, block_public_tcp=not self.tunnel_engine.running)
+            self.windivert_guard.start(pids, block_public_tcp=not self.redirect_engine.running)
             time_limit = time.monotonic() + 2.0
             while time.monotonic() < time_limit:
                 if self.windivert_guard.running:
@@ -887,8 +874,8 @@ class MainWindow(QMainWindow):
     def _protection_failure_message(self) -> str:
         if self.windivert_guard.stats.last_error:
             return self.windivert_guard.stats.last_error
-        if self.tunnel_engine.last_error:
-            return self.tunnel_engine.last_error
+        if self.redirect_engine.last_error:
+            return self.redirect_engine.last_error
         return self.windivert_status.message
 
     def _active_routed_pids(self) -> set[int]:
@@ -1019,29 +1006,25 @@ class MainWindow(QMainWindow):
                 "title": "Saved proxy failed",
                 "warning": f"Instance {instance_index} has a saved proxy, but the proxy check failed ({status}).",
             }
+        instance = self._instance_by_index(instance_index)
+        if instance is None or instance.pid is None:
+            return {
+                "title": "Proxy routing failed",
+                "warning": f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection.",
+            }
 
         try:
-            self.tunnel_engine.start(proxy)
-            session = self.bot_manager.start_routing(instance_index)
-            person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
-            if person.proxy_check[0] != "Bridge OK":
-                self.bot_manager.stop_routing(instance_index)
-                self.tunnel_engine.stop()
-                return {
-                    "title": "Proxy routing failed",
-                    "warning": (
-                        f"Instance {instance_index}: local proxy bridge failed "
-                        f"({person.proxy_check[1]})."
-                    ),
-                }
+            self.redirect_engine.start(instance_index, instance.pid, proxy)
+            self.bot_manager.start_direct_routing(instance_index)
             clear_error = self._clear_emulator_proxy(instance_index)
             if clear_error:
                 raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
-            applied_proxy = "tun2socks"
+            person.proxy_check = ("Redirected", proxy_ip)
+            applied_proxy = f"PID {instance.pid}"
         except Exception as exc:
             self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)
-            self.tunnel_engine.stop()
+            self.redirect_engine.stop(instance_index)
             return {
                 "title": "Proxy routing failed",
                 "warning": f"Instance {instance_index}: {exc}",
@@ -1056,7 +1039,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._clear_all_emulator_proxies()
-        self.tunnel_engine.stop()
+        self.redirect_engine.stop_all()
         self.windivert_guard.stop()
         self.bot_manager.clear_all_proxies()
         super().closeEvent(event)

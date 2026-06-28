@@ -61,6 +61,7 @@ class BotManager:
     def __init__(self, routing: RoutingService) -> None:
         self.routing = routing
         self.people: dict[int, BotPerson] = {}
+        self._direct_routes: set[int] = set()
 
     def sync_instances(self, instances: list[EmulatorInstance]) -> None:
         seen = set()
@@ -91,6 +92,7 @@ class BotManager:
     def clear_all_proxies(self) -> None:
         for person in self.people.values():
             person.clear_proxy()
+        self._direct_routes.clear()
         self.routing.stop_all()
 
     def start_routing(self, instance_index: int) -> RoutingSession:
@@ -99,11 +101,18 @@ class BotManager:
             raise RuntimeError("assign a proxy first")
         return self.routing.start(instance_index, proxy)
 
+    def start_direct_routing(self, instance_index: int) -> None:
+        if self.person(instance_index).proxy is None:
+            raise RuntimeError("assign a proxy first")
+        self.routing.stop(instance_index)
+        self._direct_routes.add(instance_index)
+
     def stop_routing(self, instance_index: int) -> None:
+        self._direct_routes.discard(instance_index)
         self.routing.stop(instance_index)
 
     def routed_indexes(self) -> set[int]:
-        return set(self.routing.sessions())
+        return set(self.routing.sessions()) | set(self._direct_routes)
 
     def routed_pids(self) -> set[int]:
         pids: set[int] = set()
