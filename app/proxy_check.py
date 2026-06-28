@@ -43,7 +43,8 @@ def check_http_proxy_public_ip(host: str, port: int, timeout: float = 4) -> tupl
     header, _, body = response.partition(b"\r\n\r\n")
     status_line = header.splitlines()[0].decode("iso-8859-1", errors="replace") if header else ""
     if " 200 " not in status_line:
-        return "IP check failed", status_line or "empty response"
+        detail = body.decode("utf-8", errors="replace").strip()
+        return "IP check failed", detail or status_line or "empty response"
 
     public_ip = body.decode("ascii", errors="ignore").strip()
     if not public_ip:
@@ -55,18 +56,58 @@ def _check_socks5_proxy(proxy: ProxyConfig, proxy_ip: str, timeout: float) -> tu
     try:
         with socket.create_connection((proxy.host, proxy.port), timeout=timeout) as sock:
             sock.settimeout(timeout)
-            methods = [0x00]
-            if proxy.username:
-                methods.append(0x02)
-            sock.sendall(bytes([0x05, len(methods), *methods]))
-            version, method = _recv_exact(sock, 2)
-            if version != 0x05 or method == 0xFF:
+            if not _open_socks5_connection(sock, proxy, PUBLIC_IP_HOST, 80):
                 return "Auth failed", proxy_ip
-            if method == 0x02 and not _authenticate_socks5(sock, proxy):
-                return "Auth failed", proxy_ip
-            return "Running", proxy_ip
-    except OSError:
-        return "Not running", proxy_ip
+            request = (
+                f"GET / HTTP/1.1\r\n"
+                f"Host: {PUBLIC_IP_HOST}\r\n"
+                "Connection: close\r\n"
+                "User-Agent: GrowStoneBot/1.0\r\n"
+                "\r\n"
+            ).encode("ascii")
+            sock.sendall(request)
+            response = _recv_all(sock)
+    except TimeoutError:
+        return "IP check failed", "timeout"
+    except OSError as exc:
+        return "Not running", str(exc) or proxy_ip
+
+    header, _, body = response.partition(b"\r\n\r\n")
+    status_line = header.splitlines()[0].decode("iso-8859-1", errors="replace") if header else ""
+    if " 200 " not in status_line:
+        return "IP check failed", status_line or "empty response"
+
+    public_ip = body.decode("ascii", errors="ignore").strip()
+    if not public_ip:
+        return "IP check failed", "empty response body"
+    return "Running", public_ip
+
+
+def _open_socks5_connection(sock: socket.socket, proxy: ProxyConfig, host: str, port: int) -> bool:
+    methods = [0x00]
+    if proxy.username:
+        methods.append(0x02)
+    sock.sendall(bytes([0x05, len(methods), *methods]))
+    version, method = _recv_exact(sock, 2)
+    if version != 0x05 or method == 0xFF:
+        return False
+    if method == 0x02 and not _authenticate_socks5(sock, proxy):
+        return False
+
+    encoded_host = host.encode("idna")
+    if len(encoded_host) > 255:
+        raise OSError("SOCKS5 target host is too long")
+    request = (
+        bytes([0x05, 0x01, 0x00, 0x03, len(encoded_host)])
+        + encoded_host
+        + port.to_bytes(2, "big")
+    )
+    sock.sendall(request)
+    response = _recv_exact(sock, 4)
+    if response[0] != 0x05 or response[1] != 0x00:
+        raise OSError(f"SOCKS5 connect failed with code {response[1]}")
+    _drain_socks5_bind_address(sock, response[3])
+    return True
 
 
 def _authenticate_socks5(sock: socket.socket, proxy: ProxyConfig) -> bool:
@@ -98,3 +139,15 @@ def _recv_exact(sock: socket.socket, size: int) -> bytes:
             raise OSError("Connection closed")
         data.extend(chunk)
     return bytes(data)
+
+
+def _drain_socks5_bind_address(sock: socket.socket, atyp: int) -> None:
+    if atyp == 0x01:
+        _recv_exact(sock, 4)
+    elif atyp == 0x03:
+        _recv_exact(sock, _recv_exact(sock, 1)[0])
+    elif atyp == 0x04:
+        _recv_exact(sock, 16)
+    else:
+        raise OSError("Unsupported SOCKS5 bind address type")
+    _recv_exact(sock, 2)

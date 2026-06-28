@@ -101,7 +101,8 @@ class LocalHttpProxyBridge:
             try:
                 request, buffered = _read_http_proxy_request(client)
                 upstream = _open_upstream_socks5(self.session.upstream, request)
-            except OSError:
+            except OSError as exc:
+                _send_proxy_error(client, str(exc))
                 return
 
             with upstream:
@@ -147,6 +148,21 @@ def _read_http_proxy_request(client: socket.socket) -> tuple[SocksConnectRequest
     rewritten_lines[0] = f"{method} {path} {version}"
     buffered = "\r\n".join(rewritten_lines).encode("iso-8859-1", errors="replace")
     return _socks_request_for_host(host, port), buffered
+
+
+def _send_proxy_error(client: socket.socket, message: str) -> None:
+    body = (message or "Proxy bridge failed").encode("utf-8", errors="replace")
+    response = (
+        b"HTTP/1.1 502 Bad Gateway\r\n"
+        b"Connection: close\r\n"
+        b"Content-Type: text/plain; charset=utf-8\r\n"
+        + f"Content-Length: {len(body)}\r\n\r\n".encode("ascii")
+        + body
+    )
+    try:
+        client.sendall(response)
+    except OSError:
+        pass
 
 
 def _split_request_line(line: str) -> tuple[str, str, str]:
