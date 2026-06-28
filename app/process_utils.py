@@ -12,7 +12,6 @@ LDPLAYER_PROCESS_MARKERS = (
     "dnconsole",
     "ldconsole",
     "vboxheadless",
-    "vboxnetnat",
 )
 
 

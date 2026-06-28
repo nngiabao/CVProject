@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import subprocess
 import threading
 import time
 from typing import Any, Optional
@@ -51,6 +52,8 @@ class MainWindow(QMainWindow):
         self.provider = provider
         self.proxy_source_file = Path.cwd() / ".proxy_source.txt"
         self.proxy_assignment_file = Path.cwd() / ".proxy_assignments.json"
+        self.nat_map_file = Path.cwd() / ".ldplayer_nat_map.json"
+        self.nat_pid_map: dict[str, int] = {}
         self.instances: list[EmulatorInstance] = []
         self.proxies: list[ProxyConfig] = []
         self.proxy_cursor = 0
@@ -69,6 +72,7 @@ class MainWindow(QMainWindow):
         self.resize(1240, 760)
         self.setMinimumSize(980, 620)
         self._build_ui()
+        self._load_nat_pid_map()
         self.refresh_instances()
         self._load_proxy_assignments()
         self._render_instances()
@@ -327,13 +331,17 @@ class MainWindow(QMainWindow):
             (
                 QStyle.SP_MediaPlay,
                 "Start",
-                lambda: self._run_instance_action(instance_index, self.provider.start, "started"),
+                lambda: self._run_instance_action(instance_index, self._start_instance_with_nat_mapping, "started"),
             ),
-            (QStyle.SP_MediaStop, "Stop", lambda: self._run_instance_action(instance_index, self.provider.stop, "stopped")),
+            (
+                QStyle.SP_MediaStop,
+                "Stop",
+                lambda: self._run_instance_action(instance_index, self._stop_instance_and_clear_nat_mapping, "stopped"),
+            ),
             (
                 QStyle.SP_BrowserReload,
                 "Restart",
-                lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted"),
+                lambda: self._run_instance_action(instance_index, self._restart_instance_with_nat_mapping, "restarted"),
             ),
         )
         for icon_name, tooltip, callback in actions:
@@ -439,9 +447,117 @@ class MainWindow(QMainWindow):
             return "PIDs " + ", ".join(str(pid) for pid in values)
         return "PIDs " + ", ".join(str(pid) for pid in values[:3]) + f" +{len(values) - 3}"
 
+    def _route_pids(self, instance: EmulatorInstance) -> set[int]:
+        pids = instance.live_pids()
+        mapped_pid = self._mapped_nat_pid(instance)
+        if mapped_pid is not None:
+            pids.add(mapped_pid)
+        else:
+            nat_pids = vbox_nat_pids()
+            if len(nat_pids) == 1:
+                pids.update(nat_pids)
+        return pids
+
+    def _mapped_nat_pid(self, instance: EmulatorInstance) -> Optional[int]:
+        if not instance.identity:
+            return None
+        pid = self.nat_pid_map.get(instance.identity)
+        if pid is None or not self._pid_is_alive(pid):
+            return None
+        return pid
+
+    def _load_nat_pid_map(self) -> None:
+        try:
+            data = json.loads(self.nat_map_file.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            self.nat_pid_map = {}
+            return
+        if not isinstance(data, dict):
+            self.nat_pid_map = {}
+            return
+        self.nat_pid_map = {
+            str(identity): int(pid)
+            for identity, pid in data.items()
+            if isinstance(identity, str) and isinstance(pid, int) and self._pid_is_alive(pid)
+        }
+
+    def _save_nat_pid_map(self) -> None:
+        try:
+            self.nat_map_file.write_text(json.dumps(self.nat_pid_map, indent=2), encoding="utf-8")
+        except OSError:
+            return
+
+    def _start_instance_with_nat_mapping(self, instance_index: int) -> None:
+        before = vbox_nat_pids()
+        self.provider.start(instance_index)
+        self._map_nat_pid_after_start(instance_index, before)
+
+    def _restart_instance_with_nat_mapping(self, instance_index: int) -> None:
+        self._clear_nat_mapping(instance_index)
+        before = vbox_nat_pids()
+        self.provider.restart(instance_index)
+        self._map_nat_pid_after_start(instance_index, before)
+
+    def _stop_instance_and_clear_nat_mapping(self, instance_index: int) -> None:
+        self._clear_nat_mapping(instance_index)
+        self.provider.stop(instance_index)
+
+    def _map_nat_pid_after_start(self, instance_index: int, before: set[int]) -> None:
+        deadline = time.monotonic() + 12.0
+        chosen: Optional[int] = None
+        while time.monotonic() < deadline:
+            new_pids = vbox_nat_pids() - before
+            if new_pids:
+                chosen = sorted(new_pids)[-1]
+                break
+            time.sleep(0.5)
+        if chosen is None:
+            current = vbox_nat_pids()
+            if len(current) == 1:
+                chosen = next(iter(current))
+        if chosen is None:
+            return
+        identity = self._instance_identity_for_index(instance_index)
+        if identity is None:
+            return
+        self.nat_pid_map[identity] = chosen
+        self._save_nat_pid_map()
+
+    def _clear_nat_mapping(self, instance_index: int) -> None:
+        identity = self._instance_identity_for_index(instance_index)
+        if identity is None:
+            return
+        if identity in self.nat_pid_map:
+            self.nat_pid_map.pop(identity, None)
+            self._save_nat_pid_map()
+
+    def _instance_identity_for_index(self, instance_index: int) -> Optional[str]:
+        instance = self._instance_by_index(instance_index)
+        if instance is not None and instance.identity:
+            return instance.identity
+        if hasattr(self.provider, "_instance_identity"):
+            try:
+                return str(self.provider._instance_identity(instance_index))
+            except Exception:
+                return None
+        return None
+
     @staticmethod
-    def _route_pids(instance: EmulatorInstance) -> set[int]:
-        return instance.live_pids() | vbox_nat_pids()
+    def _pid_is_alive(pid: int) -> bool:
+        try:
+            result = subprocess.run(
+                ["tasklist", "/fi", f"PID eq {pid}", "/fo", "csv", "/nh"],
+                check=False,
+                capture_output=True,
+                text=True,
+                encoding="utf-8",
+                errors="replace",
+                creationflags=subprocess.CREATE_NO_WINDOW,
+                timeout=5,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return False
+        return result.returncode == 0 and f'"{pid}"' in result.stdout
 
     def _start_task_after_routing(self, instance_index: int, task_row: int) -> None:
         instance = self._instance_by_index(instance_index)
@@ -898,7 +1014,12 @@ class MainWindow(QMainWindow):
         instance_pids = self.bot_manager.routed_pids()
         if not instance_pids:
             return set()
-        return instance_pids | ldplayer_related_pids() | vbox_nat_pids()
+        mapped_nat_pids: set[int] = set()
+        for instance_index in self.bot_manager.routed_indexes():
+            instance = self._instance_by_index(instance_index)
+            if instance is not None:
+                mapped_nat_pids.update(self._route_pids(instance))
+        return instance_pids | mapped_nat_pids | ldplayer_related_pids()
 
     def _instance_by_index(self, instance_index: int) -> Optional[EmulatorInstance]:
         return next((instance for instance in self.instances if instance.index == instance_index), None)
