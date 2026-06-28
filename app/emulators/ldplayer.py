@@ -283,7 +283,7 @@ class LdPlayerProvider(EmulatorProvider):
         self._wait_for_adb(index, timeout=20)
         errors: list[str] = []
 
-        candidates = [candidate for candidate in ("10.0.2.2", _host_lan_ip(), host) if candidate]
+        candidates = [candidate for candidate in (_host_lan_ip(), "10.0.2.2", host) if candidate]
         candidates = [candidate for candidate in candidates if candidate != "127.0.0.1"]
 
         for candidate_host in dict.fromkeys(candidates):
