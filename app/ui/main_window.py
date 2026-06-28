@@ -318,13 +318,13 @@ class MainWindow(QMainWindow):
             (
                 QStyle.SP_MediaPlay,
                 "Start",
-                lambda: self._run_instance_action(instance_index, self.provider.start, "started", apply_saved_proxy=True),
+                lambda: self._run_instance_action(instance_index, self.provider.start, "started"),
             ),
             (QStyle.SP_MediaStop, "Stop", lambda: self._run_instance_action(instance_index, self.provider.stop, "stopped")),
             (
                 QStyle.SP_BrowserReload,
                 "Restart",
-                lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted", apply_saved_proxy=True),
+                lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted"),
             ),
         )
         for icon_name, tooltip, callback in actions:
@@ -365,6 +365,10 @@ class MainWindow(QMainWindow):
                 "Assign proxy first",
                 f"Assign a SOCKS5 proxy to instance {instance_index} before enabling bot tasks.",
             )
+            self._render_task_table(instance_index)
+            return
+        if enabled and self.bot_manager.session(instance_index) is None:
+            self._start_task_after_routing(instance_index, item.row())
             self._render_task_table(instance_index)
             return
         person.set_task_enabled(item.row(), enabled)
@@ -416,6 +420,57 @@ class MainWindow(QMainWindow):
         values = (f"Enabled: {enabled}", f"Idle: {idle}", f"Errors: {errors}")
         for label, value in zip(self.bot_metrics, values):
             label.setText(value)
+
+    def _start_task_after_routing(self, instance_index: int, task_row: int) -> None:
+        instance = self._instance_by_index(instance_index)
+        if instance is None or instance.pid is None:
+            QMessageBox.information(
+                self,
+                "Start LDPlayer first",
+                f"Start instance {instance_index} before enabling bot tasks.",
+            )
+            return
+
+        self.statusBar().showMessage(f"Starting proxy routing for instance {instance_index}...", 5000)
+
+        def work() -> dict[str, Any]:
+            return {
+                "instance_index": instance_index,
+                "task_row": task_row,
+                "routed_result": self._apply_saved_proxy_routing_blocking(instance_index),
+            }
+
+        self._run_background(
+            work,
+            self._finish_start_task_after_routing,
+            "Bot start failed",
+        )
+
+    def _finish_start_task_after_routing(self, result: object) -> None:
+        if not isinstance(result, dict):
+            self.refresh_instances()
+            return
+
+        instance_index = int(result["instance_index"])
+        task_row = int(result["task_row"])
+        routed_result = result.get("routed_result")
+
+        if isinstance(routed_result, dict):
+            warning = routed_result.get("warning")
+            if warning:
+                self.refresh_instances()
+                QMessageBox.warning(self, str(routed_result.get("title", "Proxy routing failed")), str(warning))
+                return
+
+        self.bot_manager.person(instance_index).set_task_enabled(task_row, True)
+        self.refresh_instances()
+        self._update_windivert_guard()
+        self.render_selected_instance_tasks()
+
+        message = "Bot task enabled"
+        if isinstance(routed_result, dict) and routed_result.get("message"):
+            message = str(routed_result["message"])
+        self.statusBar().showMessage(message, 5000)
 
     def table_select_all(self) -> None:
         self.table.selectAll()
@@ -804,20 +859,15 @@ class MainWindow(QMainWindow):
         instance_index: int,
         action: Callable[[int], None],
         verb: str,
-        apply_saved_proxy: bool = False,
     ) -> None:
         self.statusBar().showMessage(f"Instance {instance_index} {verb}...", 5000)
         self.refresh_timer.stop()
 
         def work() -> dict[str, Any]:
             action(instance_index)
-            routed_result = None
-            if apply_saved_proxy:
-                routed_result = self._apply_saved_proxy_routing_blocking(instance_index)
             return {
                 "instance_index": instance_index,
                 "verb": verb,
-                "routed_result": routed_result,
             }
 
         self._run_background(
@@ -834,18 +884,7 @@ class MainWindow(QMainWindow):
 
         instance_index = int(result["instance_index"])
         verb = str(result["verb"])
-        routed_result = result.get("routed_result")
         self.refresh_instances()
-
-        if isinstance(routed_result, dict):
-            warning = routed_result.get("warning")
-            if warning:
-                QMessageBox.warning(self, str(routed_result.get("title", "Saved proxy failed")), str(warning))
-                return
-            message = routed_result.get("message")
-            if message:
-                self.statusBar().showMessage(str(message), 5000)
-                return
 
         self.statusBar().showMessage(f"Instance {instance_index} {verb}", 5000)
 
@@ -905,56 +944,16 @@ class MainWindow(QMainWindow):
         except Exception as exc:
             self.bot_manager.stop_routing(instance_index)
             return {
-                "title": "Saved proxy routing failed",
+                "title": "Proxy routing failed",
                 "warning": f"Instance {instance_index}: {exc}",
             }
 
         return {
             "message": (
-                f"Instance {instance_index} started with saved proxy route "
+                f"Bot task started proxy route for instance {instance_index}: "
                 f"{applied_proxy} -> {person.proxy_check[1]}"
             )
         }
-
-    def _apply_saved_proxy_routing(self, instance_index: int) -> bool:
-        person = self.bot_manager.person(instance_index)
-        proxy = person.proxy
-        if proxy is None:
-            return False
-
-        status, proxy_ip = self._check_proxy(proxy)
-        person.proxy_check = (status, proxy_ip)
-        if status != "Running":
-            self._render_instances()
-            QMessageBox.warning(
-                self,
-                "Saved proxy failed",
-                f"Instance {instance_index} has a saved proxy, but the proxy check failed ({status}).",
-            )
-            return True
-
-        try:
-            session = self.bot_manager.start_routing(instance_index)
-            applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
-            person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
-        except Exception as exc:
-            self.bot_manager.stop_routing(instance_index)
-            self._render_instances()
-            QMessageBox.warning(
-                self,
-                "Saved proxy routing failed",
-                f"Instance {instance_index}: {exc}",
-            )
-            return True
-
-        self.refresh_instances()
-        self._update_windivert_guard()
-        self._render_instances()
-        self.statusBar().showMessage(
-            f"Instance {instance_index} started with saved proxy route {applied_proxy} -> {person.proxy_check[1]}",
-            5000,
-        )
-        return True
 
     def closeEvent(self, event: QCloseEvent) -> None:
         self._clear_all_emulator_proxies()
