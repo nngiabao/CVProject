@@ -21,6 +21,13 @@ class EmulatorInstance:
     platform: str = "LDPlayer"
     identity: Optional[str] = None
     proxy: Optional[str] = None
+    pids: Optional[set[int]] = None
+
+    def live_pids(self) -> set[int]:
+        pids = set(self.pids or set())
+        if self.pid is not None:
+            pids.add(self.pid)
+        return {pid for pid in pids if pid > 0}
 
 
 @dataclass(frozen=True)

@@ -192,7 +192,8 @@ class LdPlayerProvider(EmulatorProvider):
             except ValueError:
                 continue
 
-            pid = self._running_pid_from_fields(fields)
+            pids = self._running_pids_from_fields(fields)
+            pid = next(reversed(sorted(pids)), None)
             android_started = self._android_started_from_fields(fields, pid)
             process_alive = self._is_process_alive(pid)
             if android_started and process_alive:
@@ -211,6 +212,7 @@ class LdPlayerProvider(EmulatorProvider):
                     pid=pid if process_alive else None,
                     platform=self._platform_label(),
                     identity=self._instance_identity(local_index),
+                    pids=pids,
                 )
             )
         return instances
@@ -223,6 +225,11 @@ class LdPlayerProvider(EmulatorProvider):
 
     @classmethod
     def _running_pid_from_fields(cls, fields: list[str]) -> Optional[int]:
+        pids = cls._running_pids_from_fields(fields)
+        return next(reversed(sorted(pids)), None)
+
+    @classmethod
+    def _running_pids_from_fields(cls, fields: list[str]) -> set[int]:
         possible_pids: list[int] = []
         for field in fields[4:]:
             try:
@@ -232,10 +239,7 @@ class LdPlayerProvider(EmulatorProvider):
             if value > 0:
                 possible_pids.append(value)
 
-        for pid in reversed(possible_pids):
-            if cls._is_process_alive(pid):
-                return pid
-        return None
+        return {pid for pid in possible_pids if cls._is_process_alive(pid)}
 
     @staticmethod
     def _android_started_from_fields(fields: list[str], pid: Optional[int]) -> bool:

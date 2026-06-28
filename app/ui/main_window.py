@@ -262,7 +262,7 @@ class MainWindow(QMainWindow):
             person = self.bot_manager.person(instance.index)
             assigned = person.proxy
             is_routed = instance.index in self.bot_manager.routed_indexes()
-            route_target = f"PID {instance.pid}" if is_routed and instance.pid is not None else "Off"
+            route_target = self._format_pids(instance.live_pids()) if is_routed else "Off"
             values = (
                 instance.name,
                 "",
@@ -430,9 +430,18 @@ class MainWindow(QMainWindow):
         for label, value in zip(self.bot_metrics, values):
             label.setText(value)
 
+    @staticmethod
+    def _format_pids(pids: set[int]) -> str:
+        if not pids:
+            return "Off"
+        values = sorted(pids)
+        if len(values) <= 3:
+            return "PIDs " + ", ".join(str(pid) for pid in values)
+        return "PIDs " + ", ".join(str(pid) for pid in values[:3]) + f" +{len(values) - 3}"
+
     def _start_task_after_routing(self, instance_index: int, task_row: int) -> None:
         instance = self._instance_by_index(instance_index)
-        if instance is None or instance.pid is None:
+        if instance is None or not instance.live_pids():
             QMessageBox.information(
                 self,
                 "Start LDPlayer first",
@@ -750,7 +759,7 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: assign a proxy first")
                 continue
             instance = self._instance_by_index(instance_index)
-            if instance is None or instance.pid is None:
+            if instance is None or not instance.live_pids():
                 failures.append(f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection")
                 continue
             status, proxy_ip = self._check_proxy(proxy)
@@ -759,13 +768,15 @@ class MainWindow(QMainWindow):
                 failures.append(f"Instance {instance_index}: proxy check failed ({status})")
                 continue
             try:
-                self.redirect_engine.start(instance_index, instance.pid, proxy)
+                self.redirect_engine.start_many(instance_index, instance.live_pids(), proxy)
                 self.bot_manager.start_direct_routing(instance_index)
                 clear_error = self._clear_emulator_proxy(instance_index)
                 if clear_error:
                     raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
                 person.proxy_check = ("Redirected", proxy_ip)
-                applied_routes.append(f"Instance {instance_index}: PID {instance.pid} -> {proxy.host}")
+                applied_routes.append(
+                    f"Instance {instance_index}: {self._format_pids(instance.live_pids())} -> {proxy.host}"
+                )
                 started_indexes.append(instance_index)
                 started += 1
             except Exception as exc:
@@ -1007,20 +1018,20 @@ class MainWindow(QMainWindow):
                 "warning": f"Instance {instance_index} has a saved proxy, but the proxy check failed ({status}).",
             }
         instance = self._instance_by_index(instance_index)
-        if instance is None or instance.pid is None:
+        if instance is None or not instance.live_pids():
             return {
                 "title": "Proxy routing failed",
                 "warning": f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection.",
             }
 
         try:
-            self.redirect_engine.start(instance_index, instance.pid, proxy)
+            self.redirect_engine.start_many(instance_index, instance.live_pids(), proxy)
             self.bot_manager.start_direct_routing(instance_index)
             clear_error = self._clear_emulator_proxy(instance_index)
             if clear_error:
                 raise RuntimeError(f"Could not clear Android proxy before tunnel start: {clear_error}")
             person.proxy_check = ("Redirected", proxy_ip)
-            applied_proxy = f"PID {instance.pid}"
+            applied_proxy = self._format_pids(instance.live_pids())
         except Exception as exc:
             self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)

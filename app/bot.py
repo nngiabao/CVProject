@@ -118,8 +118,8 @@ class BotManager:
         pids: set[int] = set()
         for index in self.routed_indexes():
             instance = self.person(index).instance
-            if instance is not None and instance.pid is not None:
-                pids.add(instance.pid)
+            if instance is not None:
+                pids.update(instance.live_pids())
         return pids
 
     def session(self, instance_index: int) -> Optional[RoutingSession]:
