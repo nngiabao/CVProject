@@ -712,15 +712,14 @@ class MainWindow(QMainWindow):
                 continue
             try:
                 session = self.bot_manager.start_routing(instance_index)
-                applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
                 person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
                 if person.proxy_check[0] != "Bridge OK":
                     self.bot_manager.stop_routing(instance_index)
-                    self._clear_emulator_proxy(instance_index)
                     failures.append(
                         f"Instance {instance_index}: local proxy bridge failed ({person.proxy_check[1]})"
                     )
                     continue
+                applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
                 applied_routes.append(f"Instance {instance_index}: {applied_proxy} -> {person.proxy_check[1]}")
                 started += 1
             except Exception as exc:
@@ -947,11 +946,9 @@ class MainWindow(QMainWindow):
 
         try:
             session = self.bot_manager.start_routing(instance_index)
-            applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
             person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
             if person.proxy_check[0] != "Bridge OK":
                 self.bot_manager.stop_routing(instance_index)
-                self._clear_emulator_proxy(instance_index)
                 return {
                     "title": "Proxy routing failed",
                     "warning": (
@@ -959,6 +956,7 @@ class MainWindow(QMainWindow):
                         f"({person.proxy_check[1]})."
                     ),
                 }
+            applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
         except Exception as exc:
             self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)

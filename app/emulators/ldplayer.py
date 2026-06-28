@@ -302,6 +302,13 @@ class LdPlayerProvider(EmulatorProvider):
     def set_http_proxy(self, index: int, host: str, port: int) -> str:
         self._wait_for_adb(index, timeout=20)
         errors: list[str] = []
+
+        try:
+            self._adb(index, f"reverse tcp:{port} tcp:{port}")
+            return self._apply_http_proxy(index, "127.0.0.1", port)
+        except RuntimeError as exc:
+            errors.append(f"adb reverse: {exc}")
+
         candidates = [candidate for candidate in ("10.0.2.2", _host_lan_ip(), host) if candidate]
         candidates = [candidate for candidate in candidates if candidate != "127.0.0.1"]
 
@@ -310,12 +317,6 @@ class LdPlayerProvider(EmulatorProvider):
                 return self._apply_http_proxy(index, candidate_host, port)
             except RuntimeError as exc:
                 errors.append(f"{candidate_host}: {exc}")
-
-        try:
-            self._adb(index, f"reverse tcp:{port} tcp:{port}")
-            return self._apply_http_proxy(index, "127.0.0.1", port)
-        except RuntimeError as exc:
-            errors.append(f"adb reverse: {exc}")
 
         raise RuntimeError("Could not apply Android proxy. " + " | ".join(errors))
 
