@@ -3,6 +3,7 @@ from __future__ import annotations
 import os
 import shutil
 import subprocess
+import time
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Optional
@@ -28,6 +29,7 @@ class TqkRedirectEngine:
         self.project_root = project_root
         self._processes: dict[int, subprocess.Popen[str]] = {}
         self._last_error: Optional[str] = None
+        self._log_dir = project_root / "tools" / "tqk_redirector" / "logs"
 
     @property
     def running(self) -> bool:
@@ -90,9 +92,15 @@ class TqkRedirectEngine:
             command.append("--suspend-on-attach")
 
         self._last_error = None
+        self._log_dir.mkdir(parents=True, exist_ok=True)
+        env = os.environ.copy()
+        env["WINDIVERT_LOG"] = str(
+            self._log_dir / f"windivert-instance-{instance_index}-pid-{pid}-{int(time.time())}.log"
+        )
         process = subprocess.Popen(
             command,
             cwd=str(cwd),
+            env=env,
             stdout=subprocess.PIPE,
             stderr=subprocess.PIPE,
             text=True,

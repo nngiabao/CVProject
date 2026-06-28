@@ -9,3 +9,4 @@ dist/
 .proxy_assignments.json
 tools/tqk_redirector/*
 !tools/tqk_redirector/README.md
+tools/tqk_redirector/logs/
