@@ -35,6 +35,7 @@ class LdPlayerProvider(EmulatorProvider):
         Path(r"C:\Program Files (x86)\LDPlayer\LDPlayer9\ldconsole.exe"),
         Path(r"C:\LDPlayer\dnconsole.exe"),
         Path(r"C:\LDPlayer\ldconsole.exe"),
+        Path(r"C:\LDPlayer4.0\LDPlayer\dnconsole.exe"),
         Path(r"C:\Program Files\dnplayerext2\dnconsole.exe"),
     )
     UNINSTALL_REGISTRY_PATHS = (
@@ -299,7 +300,7 @@ class LdPlayerProvider(EmulatorProvider):
 
     def set_http_proxy(self, index: int, host: str, port: int) -> str:
         expected = f"{host}:{port}"
-        self._wait_for_adb(index)
+        self._wait_for_adb(index, timeout=12)
         self._adb(index, f"shell settings put global http_proxy {expected}")
         self._adb(index, f"shell settings put global global_http_proxy_host {host}")
         self._adb(index, f"shell settings put global global_http_proxy_port {port}")
@@ -327,7 +328,7 @@ class LdPlayerProvider(EmulatorProvider):
         self._wait_for_adb(index, timeout=10)
         return self._run_bytes("adb", "--index", str(index), "--command", "exec-out screencap -p")
 
-    def _wait_for_adb(self, index: int, timeout: int = 45) -> None:
+    def _wait_for_adb(self, index: int, timeout: int = 20) -> None:
         deadline = time.monotonic() + timeout
         last_error = "device not ready"
         while time.monotonic() < deadline:
@@ -338,7 +339,7 @@ class LdPlayerProvider(EmulatorProvider):
                 last_error = output or "Android is still booting"
             except RuntimeError as exc:
                 last_error = str(exc)
-            time.sleep(2)
+            time.sleep(1)
         raise RuntimeError(f"ADB is not ready for instance {index}: {last_error}")
 
 

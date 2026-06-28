@@ -1,11 +1,12 @@
 from __future__ import annotations
 
 import json
-from typing import Optional
+import threading
+from typing import Any, Optional
 from collections.abc import Callable
 from pathlib import Path
 
-from PySide6.QtCore import QTimer, Qt
+from PySide6.QtCore import QObject, QTimer, Qt, Signal
 from PySide6.QtGui import QColor, QCloseEvent
 from PySide6.QtWidgets import (
     QAbstractItemView,
@@ -37,6 +38,11 @@ from app.windivert_guard import WinDivertGuard
 from app.windivert_support import WinDivertStatus, check_windivert
 
 
+class BackgroundSignals(QObject):
+    finished = Signal(object)
+    failed = Signal(str)
+
+
 class MainWindow(QMainWindow):
     def __init__(self, provider: EmulatorProvider) -> None:
         super().__init__()
@@ -54,6 +60,7 @@ class MainWindow(QMainWindow):
         self.bot_heading: Optional[QLabel] = None
         self.bot_metrics: list[QLabel] = []
         self.task_table: Optional[QTableWidget] = None
+        self.background_tasks: list[BackgroundSignals] = []
 
         self.setWindowTitle("GrowStone Bot")
         self.resize(1240, 760)
@@ -62,7 +69,7 @@ class MainWindow(QMainWindow):
         self._load_proxy_assignments()
         self.refresh_instances()
         self.refresh_timer = QTimer(self)
-        self.refresh_timer.setInterval(3000)
+        self.refresh_timer.setInterval(6000)
         self.refresh_timer.timeout.connect(self.refresh_instances)
         self.refresh_timer.start()
 
@@ -715,6 +722,7 @@ class MainWindow(QMainWindow):
         applied_text = "\n".join(applied_routes[:8])
         if len(applied_routes) > 8:
             applied_text += f"\n...and {len(applied_routes) - 8} more"
+        final_status = f"Started proxy routing for {started} instance(s)"
         if self.windivert_guard.running:
             QMessageBox.information(
                 self,
@@ -727,30 +735,23 @@ class MainWindow(QMainWindow):
             )
         elif self.windivert_status.available:
             error = self.windivert_guard.stats.last_error
-            message = "WinDivert is available, but the kill switch did not start."
+            final_status += " - WinDivert optional guard did not start"
             if error:
-                message += f"\n\n{error}"
-            QMessageBox.warning(self, "WinDivert not protecting", message)
+                final_status += f": {error}"
         else:
-            QMessageBox.warning(
-                self,
-                "WinDivert not active",
-                "Local authenticated proxy routing is running, but WinDivert is not active yet.\n\n"
-                f"{self.windivert_status.message}\n\n"
-                "Until transparent redirection is added, LDPlayer traffic will not be forced through "
-                "the proxy automatically.",
-            )
-        self.statusBar().showMessage(f"Started proxy routing for {started} instance(s)", 5000)
+            final_status += f" - WinDivert optional: {self.windivert_status.message}"
+        self.statusBar().showMessage(final_status, 5000)
 
     def _update_windivert_guard(self) -> None:
         pids = self._active_routed_pids()
         if not pids:
             self.windivert_guard.stop()
             return
-        self.windivert_status = check_windivert()
         if self.windivert_guard.running:
             self.windivert_guard.update_pids(pids)
-        elif self.windivert_status.available:
+            return
+        self.windivert_status = check_windivert()
+        if self.windivert_status.available:
             self.windivert_guard.start(pids)
 
     def _active_routed_pids(self) -> set[int]:
@@ -808,15 +809,115 @@ class MainWindow(QMainWindow):
         verb: str,
         apply_saved_proxy: bool = False,
     ) -> None:
-        try:
+        self.statusBar().showMessage(f"Instance {instance_index} {verb}...", 5000)
+        self.refresh_timer.stop()
+
+        def work() -> dict[str, Any]:
             action(instance_index)
-        except Exception as exc:
-            QMessageBox.warning(self, "Instance action failed", f"Instance {instance_index}: {exc}")
+            routed_result = None
+            if apply_saved_proxy:
+                routed_result = self._apply_saved_proxy_routing_blocking(instance_index)
+            return {
+                "instance_index": instance_index,
+                "verb": verb,
+                "routed_result": routed_result,
+            }
+
+        self._run_background(
+            work,
+            self._finish_instance_action,
+            "Instance action failed",
+        )
+
+    def _finish_instance_action(self, result: object) -> None:
+        self.refresh_timer.start()
+        if not isinstance(result, dict):
+            self.refresh_instances()
             return
+
+        instance_index = int(result["instance_index"])
+        verb = str(result["verb"])
+        routed_result = result.get("routed_result")
         self.refresh_instances()
-        if apply_saved_proxy and self._apply_saved_proxy_routing(instance_index):
-            return
+
+        if isinstance(routed_result, dict):
+            warning = routed_result.get("warning")
+            if warning:
+                QMessageBox.warning(self, str(routed_result.get("title", "Saved proxy failed")), str(warning))
+                return
+            message = routed_result.get("message")
+            if message:
+                self.statusBar().showMessage(str(message), 5000)
+                return
+
         self.statusBar().showMessage(f"Instance {instance_index} {verb}", 5000)
+
+    def _run_background(
+        self,
+        work: Callable[[], object],
+        on_finished: Callable[[object], None],
+        error_title: str,
+    ) -> None:
+        signals = BackgroundSignals()
+        self.background_tasks.append(signals)
+
+        def cleanup() -> None:
+            if signals in self.background_tasks:
+                self.background_tasks.remove(signals)
+            if not self.refresh_timer.isActive():
+                self.refresh_timer.start()
+
+        def finish(result: object) -> None:
+            cleanup()
+            on_finished(result)
+
+        def fail(message: str) -> None:
+            cleanup()
+            QMessageBox.warning(self, error_title, message)
+            self.refresh_instances()
+
+        signals.finished.connect(finish)
+        signals.failed.connect(fail)
+
+        def runner() -> None:
+            try:
+                signals.finished.emit(work())
+            except Exception as exc:
+                signals.failed.emit(str(exc))
+
+        threading.Thread(target=runner, name="ui-background-task", daemon=True).start()
+
+    def _apply_saved_proxy_routing_blocking(self, instance_index: int) -> Optional[dict[str, str]]:
+        person = self.bot_manager.person(instance_index)
+        proxy = person.proxy
+        if proxy is None:
+            return None
+
+        status, proxy_ip = self._check_proxy(proxy)
+        person.proxy_check = (status, proxy_ip)
+        if status != "Running":
+            return {
+                "title": "Saved proxy failed",
+                "warning": f"Instance {instance_index} has a saved proxy, but the proxy check failed ({status}).",
+            }
+
+        try:
+            session = self.bot_manager.start_routing(instance_index)
+            applied_proxy = self.provider.set_http_proxy(instance_index, session.listen_host, session.listen_port)
+            person.proxy_check = self._check_routed_public_ip(session.listen_host, session.listen_port)
+        except Exception as exc:
+            self.bot_manager.stop_routing(instance_index)
+            return {
+                "title": "Saved proxy routing failed",
+                "warning": f"Instance {instance_index}: {exc}",
+            }
+
+        return {
+            "message": (
+                f"Instance {instance_index} started with saved proxy route "
+                f"{applied_proxy} -> {person.proxy_check[1]}"
+            )
+        }
 
     def _apply_saved_proxy_routing(self, instance_index: int) -> bool:
         person = self.bot_manager.person(instance_index)

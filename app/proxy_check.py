@@ -8,7 +8,7 @@ from app.models import ProxyConfig
 PUBLIC_IP_HOST = "api.ipify.org"
 
 
-def check_proxy(proxy: ProxyConfig, timeout: float = 5) -> tuple[str, str]:
+def check_proxy(proxy: ProxyConfig, timeout: float = 3) -> tuple[str, str]:
     try:
         proxy_ip = socket.gethostbyname(proxy.host)
     except OSError:
@@ -24,7 +24,7 @@ def check_proxy(proxy: ProxyConfig, timeout: float = 5) -> tuple[str, str]:
         return "Not running", proxy_ip
 
 
-def check_http_proxy_public_ip(host: str, port: int, timeout: float = 8) -> tuple[str, str]:
+def check_http_proxy_public_ip(host: str, port: int, timeout: float = 4) -> tuple[str, str]:
     try:
         with socket.create_connection((host, port), timeout=timeout) as sock:
             sock.settimeout(timeout)
