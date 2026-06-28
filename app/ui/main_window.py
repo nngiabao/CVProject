@@ -457,11 +457,49 @@ class MainWindow(QMainWindow):
     def _missing_nat_mapping(self, instance: EmulatorInstance) -> bool:
         return bool(vbox_nat_pids()) and self._mapped_nat_pid(instance) is None
 
+    def _ensure_nat_mapping(self, instance: EmulatorInstance) -> Optional[int]:
+        mapped_pid = self._mapped_nat_pid(instance)
+        if mapped_pid is not None:
+            return mapped_pid
+        if not instance.identity:
+            return None
+
+        current_nat_pids = vbox_nat_pids()
+        if not current_nat_pids:
+            return None
+
+        self._drop_stale_nat_mappings()
+        used_by_other_instances = {
+            pid
+            for identity, pid in self.nat_pid_map.items()
+            if identity != instance.identity and self._pid_is_alive(pid)
+        }
+        available = sorted(current_nat_pids - used_by_other_instances)
+        if not available:
+            return None
+
+        chosen = available[0]
+        self.nat_pid_map[instance.identity] = chosen
+        self._save_nat_pid_map()
+        return chosen
+
+    def _drop_stale_nat_mappings(self) -> None:
+        stale = [identity for identity, pid in self.nat_pid_map.items() if not self._pid_is_alive(pid)]
+        if not stale:
+            return
+        for identity in stale:
+            self.nat_pid_map.pop(identity, None)
+        self._save_nat_pid_map()
+
     def _mapped_nat_pid(self, instance: EmulatorInstance) -> Optional[int]:
         if not instance.identity:
             return None
         pid = self.nat_pid_map.get(instance.identity)
-        if pid is None or not self._pid_is_alive(pid):
+        if pid is None:
+            return None
+        if not self._pid_is_alive(pid):
+            self.nat_pid_map.pop(instance.identity, None)
+            self._save_nat_pid_map()
             return None
         return pid
 
@@ -513,10 +551,6 @@ class MainWindow(QMainWindow):
                 chosen = sorted(new_pids)[-1]
                 break
             time.sleep(0.5)
-        if chosen is None:
-            current = vbox_nat_pids()
-            if len(current) == 1:
-                chosen = next(iter(current))
         if chosen is None:
             return
         identity = self._instance_identity_for_index(instance_index)
@@ -884,9 +918,10 @@ class MainWindow(QMainWindow):
             if instance is None or not self._route_pids(instance):
                 failures.append(f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection")
                 continue
-            if self._missing_nat_mapping(instance):
+            nat_pid = self._ensure_nat_mapping(instance)
+            if vbox_nat_pids() and nat_pid is None:
                 failures.append(
-                    f"Instance {instance_index}: missing VBoxNetNAT mapping. Stop it, then start it from this app."
+                    f"Instance {instance_index}: no available VBoxNetNAT PID in the NAT pool"
                 )
                 continue
             status, proxy_ip = self._check_proxy(proxy)
@@ -1156,10 +1191,11 @@ class MainWindow(QMainWindow):
                 "title": "Proxy routing failed",
                 "warning": f"Instance {instance_index}: start LDPlayer before enabling WinDivert protection.",
             }
-        if self._missing_nat_mapping(instance):
+        nat_pid = self._ensure_nat_mapping(instance)
+        if vbox_nat_pids() and nat_pid is None:
             return {
                 "title": "Proxy routing failed",
-                "warning": f"Instance {instance_index}: missing VBoxNetNAT mapping. Stop it, then start it from this app.",
+                "warning": f"Instance {instance_index}: no available VBoxNetNAT PID in the NAT pool.",
             }
 
         try:
