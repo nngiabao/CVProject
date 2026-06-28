@@ -259,7 +259,7 @@ class MainWindow(QMainWindow):
             assigned = person.proxy
             route = self.bot_manager.session(instance.index)
             values = (
-                f"{self._display_instance_index(instance)}  {instance.name}",
+                instance.name,
                 "",
                 instance.state.value,
                 "Assigned" if assigned else "Unassigned",
