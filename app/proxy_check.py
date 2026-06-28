@@ -48,7 +48,7 @@ def check_http_proxy_public_ip(host: str, port: int, timeout: float = 4) -> tupl
     public_ip = body.decode("ascii", errors="ignore").strip()
     if not public_ip:
         return "IP check failed", "empty response body"
-    return "Routed", public_ip
+    return "Bridge OK", public_ip
 
 
 def _check_socks5_proxy(proxy: ProxyConfig, proxy_ip: str, timeout: float) -> tuple[str, str]:

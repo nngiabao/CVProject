@@ -290,6 +290,7 @@ class MainWindow(QMainWindow):
                     running_colors = {
                         "Running": "#198754",
                         "Routed": "#198754",
+                        "Bridge OK": "#198754",
                         "Not running": "#d64550",
                         "Auth failed": "#d64550",
                         "Not checked": "#b7791f",

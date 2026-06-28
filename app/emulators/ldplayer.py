@@ -299,10 +299,11 @@ class LdPlayerProvider(EmulatorProvider):
         self._run("reboot", "--index", str(index))
 
     def set_http_proxy(self, index: int, host: str, port: int) -> str:
-        expected = f"{host}:{port}"
+        expected = f"127.0.0.1:{port}"
         self._wait_for_adb(index, timeout=12)
+        self._adb(index, f"reverse tcp:{port} tcp:{port}")
         self._adb(index, f"shell settings put global http_proxy {expected}")
-        self._adb(index, f"shell settings put global global_http_proxy_host {host}")
+        self._adb(index, "shell settings put global global_http_proxy_host 127.0.0.1")
         self._adb(index, f"shell settings put global global_http_proxy_port {port}")
         applied = self.get_http_proxy(index)
         if applied != expected:
@@ -314,6 +315,13 @@ class LdPlayerProvider(EmulatorProvider):
             self._wait_for_adb(index, timeout=10)
         except RuntimeError:
             return
+        current_proxy = self.get_http_proxy(index)
+        _, _, port_text = current_proxy.rpartition(":")
+        if port_text.isdigit():
+            try:
+                self._adb(index, f"reverse --remove tcp:{port_text}")
+            except RuntimeError:
+                pass
         self._adb(index, "shell settings put global http_proxy :0")
         self._adb(index, "shell settings delete global global_http_proxy_host")
         self._adb(index, "shell settings delete global global_http_proxy_port")
