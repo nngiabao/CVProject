@@ -394,30 +394,21 @@ class LdPlayerProvider(EmulatorProvider):
 
     def _adb_direct_serial(self, index: int, command: str) -> str:
         errors: list[str] = []
-        for serial in self._candidate_localhost_serials(index):
+        for serial in self._candidate_adb_serials(index):
             try:
-                self._run_adb_exe("connect", serial)
+                if serial.startswith("127.0.0.1:"):
+                    self._run_adb_exe("connect", serial)
                 return self._run_adb_exe("-s", serial, *command.split())
             except RuntimeError as exc:
                 errors.append(f"{serial}: {exc}")
-        raise RuntimeError("; ".join(errors) or "no localhost ADB serials were available")
+        raise RuntimeError("; ".join(errors) or "no matching ADB serials were available")
 
-    def _candidate_localhost_serials(self, index: int) -> list[str]:
-        expected = self._localhost_adb_serial(index)
-        serials = [expected]
-        try:
-            devices_output = self._run_adb_exe("devices")
-        except RuntimeError:
-            return serials
+    def _candidate_adb_serials(self, index: int) -> list[str]:
+        return [self._emulator_adb_serial(index), self._localhost_adb_serial(index)]
 
-        for line in devices_output.splitlines():
-            fields = line.split()
-            if len(fields) < 2 or fields[1] != "device":
-                continue
-            serial = fields[0]
-            if serial.startswith("127.0.0.1:") and serial not in serials:
-                serials.append(serial)
-        return serials
+    @staticmethod
+    def _emulator_adb_serial(index: int) -> str:
+        return f"emulator-{5554 + (index * 2)}"
 
     def _run_adb_exe(self, *arguments: str) -> str:
         adb_path = self._adb_exe_path()
