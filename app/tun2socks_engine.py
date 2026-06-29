@@ -134,9 +134,9 @@ class Tun2SocksEngine:
                 self._log_handle,
             )
             _set_tunnel_address(interface_index)
-            _run_route("add", self._proxy_ip, "mask", "255.255.255.255", self._gateway, "metric", "1")
-            _run_route("add", ROUTE_A, "mask", ROUTE_MASK, TUN_ADDR, "metric", "1")
-            _run_route("add", ROUTE_B, "mask", ROUTE_MASK, TUN_ADDR, "metric", "1")
+            _add_route(self._proxy_ip, "mask", "255.255.255.255", self._gateway, "metric", "1")
+            _add_route(ROUTE_A, "mask", ROUTE_MASK, TUN_ADDR, "metric", "1")
+            _add_route(ROUTE_B, "mask", ROUTE_MASK, TUN_ADDR, "metric", "1")
         except Exception:
             self._stop_tunnel()
             raise
@@ -303,6 +303,16 @@ def _set_tunnel_address(interface_index: int) -> None:
 
 def _run_route(*args: str) -> None:
     _run_checked(["route", *args])
+
+
+def _add_route(*args: str) -> None:
+    result = _run_capture(["route", "add", *args])
+    if result.returncode == 0:
+        return
+    message = (result.stderr or result.stdout or "command failed").strip()
+    if "object already exists" in message.lower() or "already exists" in message.lower():
+        return
+    raise RuntimeError(f"route add {' '.join(args)}: {message}")
 
 
 def _run_route_ignore_error(*args: str) -> None:
