@@ -10,6 +10,11 @@ from app.windows_netstat import tcp_owner_pids, udp_owner_pids
 
 
 SOCKET_REFRESH_SECONDS = 1.0
+WINDIVERT_FILTERS = (
+    "outbound and !loopback and (tcp or udp)",
+    "outbound and (tcp or udp)",
+    "outbound",
+)
 
 
 @dataclass
@@ -81,8 +86,7 @@ class WinDivertGuard:
         try:
             import pydivert
 
-            self._handle = pydivert.WinDivert("outbound and !loopback and (tcp or udp)")
-            self._handle.open()
+            self._handle = _open_windivert_guard(pydivert)
             while not self._stop_event.is_set():
                 now = time.monotonic()
                 if now - last_refresh >= SOCKET_REFRESH_SECONDS:
@@ -161,3 +165,15 @@ class WinDivertGuard:
             or ip.is_unspecified
             or ip.is_reserved
         )
+
+
+def _open_windivert_guard(pydivert: Any) -> Any:
+    errors: list[str] = []
+    for filter_text in WINDIVERT_FILTERS:
+        try:
+            handle = pydivert.WinDivert(filter_text)
+            handle.open()
+            return handle
+        except Exception as exc:
+            errors.append(f"{filter_text}: {exc}")
+    raise RuntimeError("WinDivert guard open failed. " + " | ".join(errors))
