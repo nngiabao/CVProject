@@ -805,13 +805,15 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
             return
 
+        self.windivert_guard.stop()
         for instance_index in indexes:
             self.redirect_engine.stop(instance_index)
             self.bot_manager.stop_routing(instance_index)
             self._clear_emulator_proxy(instance_index)
-        self._update_windivert_guard()
+            self.bot_manager.person(instance_index).proxy_check = None
         if not self.bot_manager.routed_indexes():
             self.redirect_engine.stop_all()
+        self._update_windivert_guard()
         self._render_instances()
         self.statusBar().showMessage(f"Stopped proxy routing for {len(indexes)} instance(s)", 5000)
 

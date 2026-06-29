@@ -101,6 +101,7 @@ class Tun2SocksEngine:
         if not self._proxy_ip:
             raise RuntimeError(f"Could not resolve proxy host {proxy.host}")
 
+        self._delete_tunnel_routes()
         command = [
             str(self.exe),
             "--device",
@@ -142,10 +143,10 @@ class Tun2SocksEngine:
             raise
 
     def _stop_tunnel(self) -> None:
-        _run_route_ignore_error("delete", ROUTE_A, "mask", ROUTE_MASK, TUN_ADDR)
-        _run_route_ignore_error("delete", ROUTE_B, "mask", ROUTE_MASK, TUN_ADDR)
+        self._delete_tunnel_routes()
         if self._proxy_ip and self._gateway:
             _run_route_ignore_error("delete", self._proxy_ip, "mask", "255.255.255.255", self._gateway)
+            _run_route_ignore_error("delete", self._proxy_ip, "mask", "255.255.255.255")
 
         if self._process is not None:
             if self._process.poll() is None:
@@ -166,6 +167,12 @@ class Tun2SocksEngine:
         self._proxy = None
         self._proxy_ip = None
         self._gateway = None
+
+    def _delete_tunnel_routes(self) -> None:
+        _run_route_ignore_error("delete", ROUTE_A, "mask", ROUTE_MASK, TUN_ADDR)
+        _run_route_ignore_error("delete", ROUTE_B, "mask", ROUTE_MASK, TUN_ADDR)
+        _run_route_ignore_error("delete", ROUTE_A, "mask", ROUTE_MASK)
+        _run_route_ignore_error("delete", ROUTE_B, "mask", ROUTE_MASK)
 
 
 def _resolve_ipv4(host: str) -> Optional[str]:
