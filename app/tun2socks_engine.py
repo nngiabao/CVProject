@@ -223,30 +223,6 @@ def _wait_for_interface(
 
 
 def _interface_exists(name: str) -> bool:
-    command = [
-        "powershell",
-        "-NoProfile",
-        "-Command",
-        (
-            "$adapter = Get-NetAdapter -Name "
-            + _powershell_single_quoted(name)
-            + " -ErrorAction SilentlyContinue; "
-            "if ($adapter) { 'yes' }"
-        ),
-    ]
-    result = subprocess.run(
-        command,
-        check=False,
-        capture_output=True,
-        text=True,
-        encoding="utf-8",
-        errors="replace",
-        creationflags=subprocess.CREATE_NO_WINDOW,
-        timeout=5,
-    )
-    if result.returncode == 0 and "yes" in result.stdout.lower():
-        return True
-
     result = subprocess.run(
         ["netsh", "interface", "show", "interface"],
         check=False,
@@ -274,10 +250,6 @@ def _read_log_tail(log_path: Optional[Path], log_handle: Optional[TextIO]) -> st
         return ""
     lines = [line.strip() for line in text.splitlines() if line.strip()]
     return " | ".join(lines[-5:])
-
-
-def _powershell_single_quoted(value: str) -> str:
-    return "'" + value.replace("'", "''") + "'"
 
 
 def _run_netsh(*args: str) -> None:
