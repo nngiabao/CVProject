@@ -126,8 +126,23 @@ class Tun2SocksEngine:
         )
 
         try:
-            _wait_for_interface(TUN_NAME, START_TIMEOUT_SECONDS, self._process, self._log_path, self._log_handle)
-            _run_netsh("interface", "ip", "set", "address", f"name={TUN_NAME}", "static", TUN_ADDR, TUN_MASK)
+            interface_index = _wait_for_ipv4_interface(
+                TUN_NAME,
+                START_TIMEOUT_SECONDS,
+                self._process,
+                self._log_path,
+                self._log_handle,
+            )
+            _run_netsh(
+                "interface",
+                "ipv4",
+                "set",
+                "address",
+                f"name={interface_index}",
+                "static",
+                TUN_ADDR,
+                TUN_MASK,
+            )
             _run_route("add", self._proxy_ip, "mask", "255.255.255.255", self._gateway, "metric", "1")
             _run_route("add", ROUTE_A, "mask", ROUTE_MASK, TUN_ADDR, "metric", "1")
             _run_route("add", ROUTE_B, "mask", ROUTE_MASK, TUN_ADDR, "metric", "1")
@@ -195,13 +210,13 @@ def _default_gateway() -> Optional[str]:
     return gateway[0].strip() if gateway else None
 
 
-def _wait_for_interface(
+def _wait_for_ipv4_interface(
     name: str,
     timeout: float,
     process: subprocess.Popen[str],
     log_path: Optional[Path],
     log_handle: Optional[TextIO],
-) -> None:
+) -> int:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
         if process.poll() is not None:
@@ -211,20 +226,21 @@ def _wait_for_interface(
                 message += f": {log_tail}"
             raise RuntimeError(message)
 
-        if _interface_exists(name):
-            return
+        interface_index = _ipv4_interface_index(name)
+        if interface_index is not None:
+            return interface_index
         time.sleep(0.25)
 
     log_tail = _read_log_tail(log_path, log_handle)
-    message = f"Wintun adapter {name} did not appear"
+    message = f"Wintun IPv4 interface {name} did not appear"
     if log_tail:
         message += f": {log_tail}"
     raise RuntimeError(message)
 
 
-def _interface_exists(name: str) -> bool:
+def _ipv4_interface_index(name: str) -> Optional[int]:
     result = subprocess.run(
-        ["netsh", "interface", "show", "interface"],
+        ["netsh", "interface", "ipv4", "show", "interfaces"],
         check=False,
         capture_output=True,
         text=True,
@@ -233,7 +249,20 @@ def _interface_exists(name: str) -> bool:
         creationflags=subprocess.CREATE_NO_WINDOW,
         timeout=5,
     )
-    return result.returncode == 0 and name.lower() in result.stdout.lower()
+    if result.returncode != 0:
+        return None
+
+    for line in result.stdout.splitlines():
+        parts = line.split()
+        if len(parts) < 5:
+            continue
+        if parts[-1].lower() != name.lower():
+            continue
+        try:
+            return int(parts[0])
+        except ValueError:
+            return None
+    return None
 
 
 def _read_log_tail(log_path: Optional[Path], log_handle: Optional[TextIO]) -> str:
