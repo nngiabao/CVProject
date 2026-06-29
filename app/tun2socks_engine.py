@@ -133,16 +133,7 @@ class Tun2SocksEngine:
                 self._log_path,
                 self._log_handle,
             )
-            _run_netsh(
-                "interface",
-                "ipv4",
-                "set",
-                "address",
-                f"name={interface_index}",
-                "static",
-                TUN_ADDR,
-                TUN_MASK,
-            )
+            _set_tunnel_address(interface_index)
             _run_route("add", self._proxy_ip, "mask", "255.255.255.255", self._gateway, "metric", "1")
             _run_route("add", ROUTE_A, "mask", ROUTE_MASK, TUN_ADDR, "metric", "1")
             _run_route("add", ROUTE_B, "mask", ROUTE_MASK, TUN_ADDR, "metric", "1")
@@ -285,6 +276,31 @@ def _run_netsh(*args: str) -> None:
     _run_checked(["netsh", *args])
 
 
+def _set_tunnel_address(interface_index: int) -> None:
+    result = _run_capture(
+        [
+            "netsh",
+            "interface",
+            "ipv4",
+            "set",
+            "address",
+            f"name={interface_index}",
+            "static",
+            TUN_ADDR,
+            TUN_MASK,
+        ]
+    )
+    if result.returncode == 0:
+        return
+    message = (result.stderr or result.stdout or "command failed").strip()
+    if "already exists" in message.lower():
+        return
+    raise RuntimeError(
+        "netsh interface ipv4 set address "
+        f"name={interface_index} static {TUN_ADDR} {TUN_MASK}: {message}"
+    )
+
+
 def _run_route(*args: str) -> None:
     _run_checked(["route", *args])
 
@@ -303,7 +319,14 @@ def _run_route_ignore_error(*args: str) -> None:
 
 
 def _run_checked(command: list[str]) -> None:
-    result = subprocess.run(
+    result = _run_capture(command)
+    if result.returncode != 0:
+        message = (result.stderr or result.stdout or "command failed").strip()
+        raise RuntimeError(f"{' '.join(command)}: {message}")
+
+
+def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
+    return subprocess.run(
         command,
         check=False,
         capture_output=True,
@@ -313,6 +336,3 @@ def _run_checked(command: list[str]) -> None:
         creationflags=subprocess.CREATE_NO_WINDOW,
         timeout=10,
     )
-    if result.returncode != 0:
-        message = (result.stderr or result.stdout or "command failed").strip()
-        raise RuntimeError(f"{' '.join(command)}: {message}")
