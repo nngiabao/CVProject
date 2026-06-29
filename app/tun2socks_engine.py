@@ -104,7 +104,7 @@ class Tun2SocksEngine:
         command = [
             str(self.exe),
             "--device",
-            f"wintun://{TUN_NAME}",
+            f"tun://{TUN_NAME}",
             "--proxy",
             proxy.connection_url,
             "--loglevel",
