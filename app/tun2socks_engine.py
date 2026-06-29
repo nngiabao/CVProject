@@ -93,6 +93,9 @@ class Tun2SocksEngine:
             self._instance_indexes.clear()
             self._stop_tunnel()
 
+    def cleanup_stale_routes(self) -> None:
+        self._delete_tunnel_routes()
+
     def _start_tunnel(self, proxy: ProxyConfig) -> None:
         self._gateway = _default_gateway()
         self._proxy_ip = _resolve_ipv4(proxy.host)
@@ -159,6 +162,7 @@ class Tun2SocksEngine:
             if self._process.returncode not in (0, None):
                 self._last_error = self._last_error or f"tun2socks exited with code {self._process.returncode}"
             self._process = None
+        self._delete_tunnel_routes()
         if self._log_handle is not None:
             self._log_handle.close()
             self._log_handle = None
@@ -173,6 +177,8 @@ class Tun2SocksEngine:
         _run_route_ignore_error("delete", ROUTE_B, "mask", ROUTE_MASK, TUN_ADDR)
         _run_route_ignore_error("delete", ROUTE_A, "mask", ROUTE_MASK)
         _run_route_ignore_error("delete", ROUTE_B, "mask", ROUTE_MASK)
+        _remove_net_route_ignore_error(f"{ROUTE_A}/1", TUN_ADDR)
+        _remove_net_route_ignore_error(f"{ROUTE_B}/1", TUN_ADDR)
 
 
 def _resolve_ipv4(host: str) -> Optional[str]:
@@ -335,6 +341,28 @@ def _run_route_ignore_error(*args: str) -> None:
     )
 
 
+def _remove_net_route_ignore_error(destination_prefix: str, next_hop: str) -> None:
+    command = (
+        "$routes = Get-NetRoute -DestinationPrefix "
+        + _powershell_quote(destination_prefix)
+        + " -ErrorAction SilentlyContinue | "
+        + "Where-Object { $_.NextHop -eq "
+        + _powershell_quote(next_hop)
+        + " }; "
+        + "$routes | Remove-NetRoute -Confirm:$false -ErrorAction SilentlyContinue"
+    )
+    subprocess.run(
+        ["powershell", "-NoProfile", "-Command", command],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        timeout=10,
+    )
+
+
 def _run_checked(command: list[str]) -> None:
     result = _run_capture(command)
     if result.returncode != 0:
@@ -353,3 +381,7 @@ def _run_capture(command: list[str]) -> subprocess.CompletedProcess[str]:
         creationflags=subprocess.CREATE_NO_WINDOW,
         timeout=10,
     )
+
+
+def _powershell_quote(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"

@@ -57,6 +57,7 @@ class MainWindow(QMainWindow):
         self.routing = RoutingService()
         self.bot_manager = BotManager(self.routing)
         self.redirect_engine = Tun2SocksEngine(Path.cwd())
+        self.redirect_engine.cleanup_stale_routes()
         self.windivert_guard = WinDivertGuard()
         self.windivert_status: WinDivertStatus = check_windivert()
         self.proxy_summary: Optional[QLabel] = None
@@ -813,6 +814,7 @@ class MainWindow(QMainWindow):
             self.bot_manager.person(instance_index).proxy_check = None
         if not self.bot_manager.routed_indexes():
             self.redirect_engine.stop_all()
+            self.redirect_engine.cleanup_stale_routes()
         self._update_windivert_guard()
         self._render_instances()
         self.statusBar().showMessage(f"Stopped proxy routing for {len(indexes)} instance(s)", 5000)
