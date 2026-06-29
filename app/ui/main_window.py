@@ -771,7 +771,7 @@ class MainWindow(QMainWindow):
                 self.bot_manager.start_direct_routing(instance_index)
                 clear_error = self._clear_emulator_proxy(instance_index)
                 if clear_error:
-                    raise RuntimeError(f"Could not clear Android proxy after tunnel start: {clear_error}")
+                    failures.append(f"Instance {instance_index}: tunnel started, but Android proxy cleanup failed ({clear_error})")
                 person.proxy_check = ("Tunnel", proxy_ip)
                 applied_routes.append(
                     f"Instance {instance_index}: Wintun -> {proxy.host}"
@@ -1033,8 +1033,6 @@ class MainWindow(QMainWindow):
             self.redirect_engine.start_many(instance_index, route_pids, proxy)
             self.bot_manager.start_direct_routing(instance_index)
             clear_error = self._clear_emulator_proxy(instance_index)
-            if clear_error:
-                raise RuntimeError(f"Could not clear Android proxy after tunnel start: {clear_error}")
             person.proxy_check = ("Tunnel", proxy_ip)
             applied_proxy = "Wintun"
         except Exception as exc:
@@ -1050,6 +1048,7 @@ class MainWindow(QMainWindow):
             "message": (
                 f"Bot task started tunnel route for instance {instance_index}: "
                 f"{applied_proxy} -> {person.proxy_check[1]}"
+                + (f" (Android proxy cleanup failed: {clear_error})" if clear_error else "")
             )
         }
 
