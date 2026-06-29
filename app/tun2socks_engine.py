@@ -42,6 +42,7 @@ class Tun2SocksEngine:
         self._gateway: Optional[str] = None
         self._last_error: Optional[str] = None
         self._log_handle: Optional[TextIO] = None
+        self._log_path: Optional[Path] = None
         self._lock = threading.Lock()
 
     @property
@@ -111,7 +112,8 @@ class Tun2SocksEngine:
         ]
         log_dir = self.tool_dir / "logs"
         log_dir.mkdir(parents=True, exist_ok=True)
-        self._log_handle = (log_dir / f"tun2socks-{int(time.time())}.log").open("w", encoding="utf-8")
+        self._log_path = log_dir / f"tun2socks-{int(time.time())}.log"
+        self._log_handle = self._log_path.open("w", encoding="utf-8")
         self._process = subprocess.Popen(
             command,
             cwd=str(self.tool_dir),
@@ -124,7 +126,7 @@ class Tun2SocksEngine:
         )
 
         try:
-            _wait_for_interface(TUN_NAME, START_TIMEOUT_SECONDS)
+            _wait_for_interface(TUN_NAME, START_TIMEOUT_SECONDS, self._process, self._log_path, self._log_handle)
             _run_netsh("interface", "ip", "set", "address", f"name={TUN_NAME}", "static", TUN_ADDR, TUN_MASK)
             _run_route("add", self._proxy_ip, "mask", "255.255.255.255", self._gateway, "metric", "1")
             _run_route("add", ROUTE_A, "mask", ROUTE_MASK, TUN_ADDR, "metric", "1")
@@ -153,6 +155,7 @@ class Tun2SocksEngine:
         if self._log_handle is not None:
             self._log_handle.close()
             self._log_handle = None
+        self._log_path = None
 
         self._proxy = None
         self._proxy_ip = None
@@ -192,23 +195,89 @@ def _default_gateway() -> Optional[str]:
     return gateway[0].strip() if gateway else None
 
 
-def _wait_for_interface(name: str, timeout: float) -> None:
+def _wait_for_interface(
+    name: str,
+    timeout: float,
+    process: subprocess.Popen[str],
+    log_path: Optional[Path],
+    log_handle: Optional[TextIO],
+) -> None:
     deadline = time.monotonic() + timeout
     while time.monotonic() < deadline:
-        result = subprocess.run(
-            ["netsh", "interface", "show", "interface", f"name={name}"],
-            check=False,
-            capture_output=True,
-            text=True,
-            encoding="utf-8",
-            errors="replace",
-            creationflags=subprocess.CREATE_NO_WINDOW,
-            timeout=5,
-        )
-        if result.returncode == 0 and name.lower() in result.stdout.lower():
+        if process.poll() is not None:
+            log_tail = _read_log_tail(log_path, log_handle)
+            message = f"tun2socks exited before Wintun adapter {name} appeared"
+            if log_tail:
+                message += f": {log_tail}"
+            raise RuntimeError(message)
+
+        if _interface_exists(name):
             return
         time.sleep(0.25)
-    raise RuntimeError(f"Wintun adapter {name} did not appear")
+
+    log_tail = _read_log_tail(log_path, log_handle)
+    message = f"Wintun adapter {name} did not appear"
+    if log_tail:
+        message += f": {log_tail}"
+    raise RuntimeError(message)
+
+
+def _interface_exists(name: str) -> bool:
+    command = [
+        "powershell",
+        "-NoProfile",
+        "-Command",
+        (
+            "$adapter = Get-NetAdapter -Name "
+            + _powershell_single_quoted(name)
+            + " -ErrorAction SilentlyContinue; "
+            "if ($adapter) { 'yes' }"
+        ),
+    ]
+    result = subprocess.run(
+        command,
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        timeout=5,
+    )
+    if result.returncode == 0 and "yes" in result.stdout.lower():
+        return True
+
+    result = subprocess.run(
+        ["netsh", "interface", "show", "interface"],
+        check=False,
+        capture_output=True,
+        text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=subprocess.CREATE_NO_WINDOW,
+        timeout=5,
+    )
+    return result.returncode == 0 and name.lower() in result.stdout.lower()
+
+
+def _read_log_tail(log_path: Optional[Path], log_handle: Optional[TextIO]) -> str:
+    if log_handle is not None:
+        try:
+            log_handle.flush()
+        except OSError:
+            pass
+    if log_path is None:
+        return ""
+    try:
+        text = log_path.read_text(encoding="utf-8", errors="replace").strip()
+    except OSError:
+        return ""
+    lines = [line.strip() for line in text.splitlines() if line.strip()]
+    return " | ".join(lines[-5:])
+
+
+def _powershell_single_quoted(value: str) -> str:
+    return "'" + value.replace("'", "''") + "'"
 
 
 def _run_netsh(*args: str) -> None:
@@ -246,4 +315,3 @@ def _run_checked(command: list[str]) -> None:
     if result.returncode != 0:
         message = (result.stderr or result.stdout or "command failed").strip()
         raise RuntimeError(f"{' '.join(command)}: {message}")
-
