@@ -3,6 +3,7 @@ from __future__ import annotations
 import re
 import shutil
 import subprocess
+import os
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -149,17 +150,40 @@ class WireGuardEmulatorManager:
         return last_output
 
     def _adb_path(self) -> Path:
-        candidates = (
-            self.app_root.parent / "android-sdk" / "platform-tools" / "adb.exe",
-            self.app_root / "android-sdk" / "platform-tools" / "adb.exe",
-        )
+        candidates = list(_adb_candidates(self.app_root))
         for candidate in candidates:
             if candidate.is_file():
                 return candidate
         discovered = shutil.which("adb.exe") or shutil.which("adb")
         if discovered:
             return Path(discovered)
-        raise RuntimeError("adb.exe was not found")
+        checked = "\n".join(str(path) for path in candidates)
+        raise RuntimeError(
+            "adb.exe was not found. Install Android platform-tools, add adb.exe to PATH, "
+            "or keep LDPlayer's adb.exe in its install folder.\n\nChecked:\n" + checked
+        )
+
+
+def _adb_candidates(app_root: Path) -> tuple[Path, ...]:
+    env_roots = [
+        value
+        for value in (
+            os.environ.get("ANDROID_HOME"),
+            os.environ.get("ANDROID_SDK_ROOT"),
+            os.environ.get("LOCALAPPDATA") and str(Path(os.environ["LOCALAPPDATA"]) / "Android" / "Sdk"),
+        )
+        if value
+    ]
+    sdk_candidates = [Path(root) / "platform-tools" / "adb.exe" for root in env_roots]
+    return (
+        app_root.parent / "android-sdk" / "platform-tools" / "adb.exe",
+        app_root / "android-sdk" / "platform-tools" / "adb.exe",
+        *sdk_candidates,
+        Path(r"C:\LDPlayer\LDPlayer9\adb.exe"),
+        Path(r"C:\LDPlayer\LDPlayer4\adb.exe"),
+        Path(r"C:\Program Files\LDPlayer\LDPlayer9\adb.exe"),
+        Path(r"C:\Program Files\BlueStacks_nxt\HD-Adb.exe"),
+    )
 
 
 def _candidate_serials(instance_index: int) -> tuple[str, str]:
