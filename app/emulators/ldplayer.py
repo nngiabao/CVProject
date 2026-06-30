@@ -4,7 +4,6 @@ from typing import Optional
 import os
 import re
 import shutil
-import socket
 import subprocess
 import time
 from ctypes import POINTER, WinDLL, get_last_error
@@ -283,67 +282,6 @@ class LdPlayerProvider(EmulatorProvider):
     def restart(self, index: int) -> None:
         self._run("reboot", "--index", str(index))
 
-    def set_http_proxy(self, index: int, host: str, port: int) -> str:
-        self._wait_for_adb(index, timeout=20)
-        errors: list[str] = []
-
-        candidates = [candidate for candidate in (_host_lan_ip(), "10.0.2.2", host) if candidate]
-        candidates = [candidate for candidate in candidates if candidate != "127.0.0.1"]
-
-        for candidate_host in dict.fromkeys(candidates):
-            try:
-                return self._apply_http_proxy(index, candidate_host, port)
-            except RuntimeError as exc:
-                errors.append(f"{candidate_host}: {exc}")
-
-        try:
-            self._adb(index, f"reverse tcp:{port} tcp:{port}")
-            return self._apply_http_proxy(index, "127.0.0.1", port)
-        except RuntimeError as exc:
-            errors.append(f"adb reverse: {exc}")
-
-        raise RuntimeError("Could not apply Android proxy. " + " | ".join(errors))
-
-    def _apply_http_proxy(self, index: int, host: str, port: int) -> str:
-        expected = f"{host}:{port}"
-        self._adb(index, f"shell settings put global http_proxy {expected}")
-        self._adb(index, f"shell settings put global global_http_proxy_host {host}")
-        self._adb(index, f"shell settings put global global_http_proxy_port {port}")
-        applied = self.get_http_proxy(index)
-        if applied != expected:
-            raise RuntimeError(f"expected {expected}, got {applied or 'empty'}")
-        return applied
-
-    def clear_http_proxy(self, index: int) -> None:
-        try:
-            self._wait_for_adb(index, timeout=10)
-        except RuntimeError as exc:
-            raise RuntimeError(f"ADB is not ready while clearing Android proxy for instance {index}: {exc}")
-        try:
-            self._adb(index, "reverse --remove-all")
-        except RuntimeError:
-            pass
-
-        errors: list[str] = []
-        commands = (
-            "shell settings put global http_proxy :0",
-            "shell settings delete global http_proxy",
-            "shell settings delete global global_http_proxy_host",
-            "shell settings delete global global_http_proxy_port",
-            "shell settings delete global global_http_proxy_exclusion_list",
-        )
-        for command in commands:
-            try:
-                self._adb(index, command)
-            except RuntimeError as exc:
-                errors.append(f"{command}: {exc}")
-        if len(errors) == len(commands):
-            raise RuntimeError("Could not clear Android proxy. " + " | ".join(errors))
-
-    def get_http_proxy(self, index: int) -> str:
-        self._wait_for_adb(index, timeout=30)
-        return self._adb(index, "shell settings get global http_proxy").strip()
-
     def _adb(self, index: int, command: str) -> str:
         last_error: Optional[RuntimeError] = None
         fallback_error: Optional[RuntimeError] = None
@@ -453,17 +391,6 @@ class LdPlayerProvider(EmulatorProvider):
                 last_error = str(exc)
             time.sleep(1)
         raise RuntimeError(f"ADB is not ready for instance {index}: {last_error}")
-
-
-def _host_lan_ip() -> str:
-    sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-    try:
-        sock.connect(("8.8.8.8", 80))
-        return str(sock.getsockname()[0])
-    except OSError:
-        return ""
-    finally:
-        sock.close()
 
 
 def _is_transient_adb_error(message: str) -> bool:

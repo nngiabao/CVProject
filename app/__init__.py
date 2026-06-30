@@ -1,1 +1,1 @@
-"""Emulator Proxy Manager application."""
+"""GrowStone Bot application."""

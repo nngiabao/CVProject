@@ -3,8 +3,7 @@ from __future__ import annotations
 from typing import Optional
 from dataclasses import dataclass
 
-from app.models import EmulatorInstance, ProxyConfig
-from app.routing import RoutingService, RoutingSession
+from app.models import EmulatorInstance, WireGuardConfig
 
 
 @dataclass
@@ -22,8 +21,8 @@ class BotTask:
 class BotPerson:
     instance_index: int
     instance: Optional[EmulatorInstance] = None
-    proxy: Optional[ProxyConfig] = None
-    proxy_check: Optional[tuple[str, str]] = None
+    wireguard_config: Optional[WireGuardConfig] = None
+    wireguard_check: Optional[tuple[str, str]] = None
     tasks: Optional[list[BotTask]] = None
 
     def __post_init__(self) -> None:
@@ -32,15 +31,19 @@ class BotPerson:
 
     @property
     def assigned(self) -> bool:
-        return self.proxy is not None
+        return self.wireguard_config is not None
 
-    def assign_proxy(self, proxy: ProxyConfig, proxy_check: Optional[tuple[str, str]] = None) -> None:
-        self.proxy = proxy
-        self.proxy_check = proxy_check
+    def assign_wireguard(
+        self,
+        config: WireGuardConfig,
+        check: Optional[tuple[str, str]] = None,
+    ) -> None:
+        self.wireguard_config = config
+        self.wireguard_check = check
 
-    def clear_proxy(self) -> None:
-        self.proxy = None
-        self.proxy_check = None
+    def clear_wireguard(self) -> None:
+        self.wireguard_config = None
+        self.wireguard_check = None
         for task in self.tasks or []:
             task.set_enabled(False)
 
@@ -58,10 +61,8 @@ class BotPerson:
 
 
 class BotManager:
-    def __init__(self, routing: RoutingService) -> None:
-        self.routing = routing
+    def __init__(self) -> None:
         self.people: dict[int, BotPerson] = {}
-        self._direct_routes: set[int] = set()
 
     def sync_instances(self, instances: list[EmulatorInstance]) -> None:
         seen = set()
@@ -80,51 +81,17 @@ class BotManager:
     def assigned_count(self) -> int:
         return sum(person.assigned for person in self.people.values())
 
-    def assign_proxy(
+    def assign_wireguard(
         self,
         instance_index: int,
-        proxy: ProxyConfig,
-        proxy_check: Optional[tuple[str, str]] = None,
+        config: WireGuardConfig,
+        check: Optional[tuple[str, str]] = None,
     ) -> None:
-        self.stop_routing(instance_index)
-        self.person(instance_index).assign_proxy(proxy, proxy_check)
+        self.person(instance_index).assign_wireguard(config, check)
 
-    def clear_all_proxies(self) -> None:
+    def clear_all_wireguard(self) -> None:
         for person in self.people.values():
-            person.clear_proxy()
-        self._direct_routes.clear()
-        self.routing.stop_all()
-
-    def start_routing(self, instance_index: int) -> RoutingSession:
-        proxy = self.person(instance_index).proxy
-        if proxy is None:
-            raise RuntimeError("assign a proxy first")
-        return self.routing.start(instance_index, proxy)
-
-    def start_direct_routing(self, instance_index: int) -> None:
-        if self.person(instance_index).proxy is None:
-            raise RuntimeError("assign a proxy first")
-        self.routing.stop(instance_index)
-        self._direct_routes.add(instance_index)
-
-    def stop_routing(self, instance_index: int) -> None:
-        self._direct_routes.discard(instance_index)
-        self.routing.stop(instance_index)
-
-    def routed_indexes(self) -> set[int]:
-        return set(self.routing.sessions()) | set(self._direct_routes)
-
-    def routed_pids(self) -> set[int]:
-        pids: set[int] = set()
-        for index in self.routed_indexes():
-            instance = self.person(index).instance
-            if instance is not None:
-                pids.update(instance.live_pids())
-        return pids
-
-    def session(self, instance_index: int) -> Optional[RoutingSession]:
-        return self.routing.session(instance_index)
-
+            person.clear_wireguard()
 
 def default_tasks() -> list[BotTask]:
     return [

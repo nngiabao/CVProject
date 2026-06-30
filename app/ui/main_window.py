@@ -2,7 +2,6 @@ from __future__ import annotations
 
 import json
 import threading
-import time
 from typing import Any, Optional
 from collections.abc import Callable
 from pathlib import Path
@@ -15,7 +14,6 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
-    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -31,14 +29,8 @@ from PySide6.QtWidgets import (
 from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
 from app.features.stone_merge import StoneMergeScanner
-from app.models import EmulatorInstance, InstanceState, ProxyConfig
-from app.process_utils import ldplayer_related_pids
-from app.proxy_check import check_proxy
-from app.proxy_parser import parse_proxy_line, parse_proxy_text
-from app.routing import RoutingService
-from app.tun2socks_engine import Tun2SocksEngine
-from app.windivert_guard import WinDivertGuard
-from app.windivert_support import WinDivertStatus, check_windivert
+from app.models import EmulatorInstance, InstanceState, WireGuardConfig
+from app.wireguard import WireGuardEmulatorManager
 
 
 class BackgroundSignals(QObject):
@@ -50,19 +42,14 @@ class MainWindow(QMainWindow):
     def __init__(self, provider: EmulatorProvider) -> None:
         super().__init__()
         self.provider = provider
-        self.proxy_source_file = Path.cwd() / ".proxy_source.txt"
-        self.proxy_assignment_file = Path.cwd() / ".proxy_assignments.json"
+        self.wireguard_source_file = Path.cwd() / ".wireguard_source.txt"
+        self.wireguard_assignment_file = Path.cwd() / ".wireguard_assignments.json"
         self.instances: list[EmulatorInstance] = []
-        self.proxies: list[ProxyConfig] = []
-        self.proxy_cursor = 0
-        self.routing = RoutingService()
-        self.bot_manager = BotManager(self.routing)
-        self.redirect_engine = Tun2SocksEngine(Path.cwd())
+        self.wireguard_configs: list[WireGuardConfig] = []
+        self.bot_manager = BotManager()
+        self.wireguard_manager = WireGuardEmulatorManager(Path.cwd())
         self.stone_scanner = StoneMergeScanner(Path.cwd() / "assets" / "templates" / "stones")
-        self.redirect_engine.cleanup_stale_routes()
-        self.windivert_guard = WinDivertGuard()
-        self.windivert_status: WinDivertStatus = check_windivert()
-        self.proxy_summary: Optional[QLabel] = None
+        self.wireguard_summary: Optional[QLabel] = None
         self.bot_heading: Optional[QLabel] = None
         self.bot_metrics: list[QLabel] = []
         self.task_table: Optional[QTableWidget] = None
@@ -73,7 +60,7 @@ class MainWindow(QMainWindow):
         self.setMinimumSize(980, 620)
         self._build_ui()
         self.refresh_instances()
-        self._load_proxy_assignments()
+        self._load_wireguard_assignments()
         self._render_instances()
         self.refresh_timer = QTimer(self)
         self.refresh_timer.setInterval(6000)
@@ -98,9 +85,9 @@ class MainWindow(QMainWindow):
         layout.setContentsMargins(18, 14, 18, 14)
 
         title_box = QVBoxLayout()
-        title = QLabel("Emulator Proxy Manager")
+        title = QLabel("GrowStone Bot")
         title.setObjectName("title")
-        subtitle = QLabel("LDPlayer fleet control and per-instance proxy assignment")
+        subtitle = QLabel("LDPlayer fleet control and per-instance WireGuard assignment")
         subtitle.setObjectName("subtitle")
         title_box.addWidget(title)
         title_box.addWidget(subtitle)
@@ -110,14 +97,10 @@ class MainWindow(QMainWindow):
         self.total_metric = QLabel("Total: 0")
         self.running_metric = QLabel("Running: 0")
         self.assigned_metric = QLabel("Assigned: 0")
-        self.protection_metric = QLabel(self._protection_label())
-        self.guard_metric = QLabel("Guard: 0 PIDs / 0 blocked")
         for metric in (
             self.total_metric,
             self.running_metric,
             self.assigned_metric,
-            self.protection_metric,
-            self.guard_metric,
         ):
             metric.setObjectName("metric")
             layout.addWidget(metric)
@@ -138,29 +121,23 @@ class MainWindow(QMainWindow):
         select_all.clicked.connect(self.table_select_all)
         clear = QPushButton("Clear")
         clear.clicked.connect(self.clear_selection)
-        load = QPushButton("Load SOCKS5 proxies")
-        load.setObjectName("primary")
-        load.clicked.connect(self.load_proxies_from_file)
-        clear_proxies = QPushButton("Clear proxies")
-        clear_proxies.clicked.connect(self.clear_proxies)
-        self.proxy_summary = QLabel("SOCKS5 proxies: 0")
-        self.proxy_summary.setObjectName("muted")
-        assign = QPushButton("Assign proxy to selected")
+        assign = QPushButton("Assign .conf")
         assign.setObjectName("primary")
-        assign.clicked.connect(self.assign_proxies)
-        check = QPushButton("Check selected proxies")
-        check.clicked.connect(self.check_selected_proxies)
-        route = QPushButton("Start proxy")
-        route.setToolTip("Starts local authenticated SOCKS5 bridges for selected assigned instances")
-        route.clicked.connect(self.start_proxy_routing)
-        stop_route = QPushButton("Stop proxy routing")
-        stop_route.clicked.connect(self.stop_proxy_routing)
+        assign.clicked.connect(self.assign_wireguard_config)
+        setup = QPushButton("Install / import")
+        setup.clicked.connect(self.install_or_import_wireguard)
+        open_app = QPushButton("Open WireGuard")
+        open_app.clicked.connect(self.open_wireguard_app)
+        check = QPushButton("Check VPN IP")
+        check.clicked.connect(self.check_selected_wireguard_ips)
+        clear_configs = QPushButton("Clear configs")
+        clear_configs.clicked.connect(self.clear_wireguard_configs)
+        self.wireguard_summary = QLabel("WireGuard configs: 0")
+        self.wireguard_summary.setObjectName("muted")
 
-        for button in (select_all, clear, load, clear_proxies, assign, check):
+        for button in (select_all, clear, assign, setup, open_app, check, clear_configs):
             layout.addWidget(button)
-        layout.addWidget(self.proxy_summary)
-        for button in (route, stop_route):
-            layout.addWidget(button)
+        layout.addWidget(self.wireguard_summary)
         layout.addStretch()
         return frame
 
@@ -187,10 +164,10 @@ class MainWindow(QMainWindow):
                 "Instance",
                 "",
                 "State",
-                "Proxy status",
-                "Proxy running",
-                "Proxy IP",
-                "Routing",
+                "Config",
+                "WireGuard",
+                "Public IP",
+                "Ready",
             ]
         )
         self.table.setSelectionBehavior(QAbstractItemView.SelectRows)
@@ -253,9 +230,8 @@ class MainWindow(QMainWindow):
         self.instances = fresh_instances
         self.bot_manager.sync_instances(self.instances)
         for instance in self.instances:
-            assigned = self.bot_manager.person(instance.index).proxy
-            instance.proxy = assigned.display if assigned else None
-        self._update_windivert_guard()
+            assigned = self.bot_manager.person(instance.index).wireguard_config
+            instance.network = assigned.display if assigned else None
         self._render_instances()
         self.statusBar().showMessage(self.provider.display_name)
 
@@ -263,17 +239,17 @@ class MainWindow(QMainWindow):
         self.table.setRowCount(len(self.instances))
         for row, instance in enumerate(self.instances):
             person = self.bot_manager.person(instance.index)
-            assigned = person.proxy
-            is_routed = instance.index in self.bot_manager.routed_indexes()
-            route_target = "Tunnel" if is_routed else "Off"
+            assigned = person.wireguard_config
+            check = person.wireguard_check
+            ready = "Ready" if assigned and check and check[0] == "IP OK" else "Assigned" if assigned else "Off"
             values = (
                 instance.name,
                 "",
                 instance.state.value,
-                "Assigned" if assigned else "Unassigned",
-                person.proxy_check[0] if assigned and person.proxy_check else "Not checked" if assigned else "—",
-                person.proxy_check[1] if assigned and person.proxy_check else "—",
-                route_target,
+                assigned.display if assigned else "Unassigned",
+                check[0] if assigned and check else "Not checked" if assigned else "-",
+                check[1] if assigned and check else "-",
+                ready,
             )
             for column, value in enumerate(values):
                 if column == 1:
@@ -300,6 +276,8 @@ class MainWindow(QMainWindow):
                         "Tunnel": "#198754",
                         "Routed": "#198754",
                         "Bridge OK": "#198754",
+                        "Installed": "#198754",
+                        "IP OK": "#198754",
                         "Not running": "#d64550",
                         "Auth failed": "#d64550",
                         "Not checked": "#b7791f",
@@ -307,19 +285,13 @@ class MainWindow(QMainWindow):
                     }
                     item.setForeground(QColor(running_colors.get(value, "#69758a")))
                 if column == 6:
-                    item.setForeground(QColor("#198754" if is_routed else "#69758a"))
+                    item.setForeground(QColor("#198754" if ready == "Ready" else "#69758a"))
                 self.table.setItem(row, column, item)
 
         running = sum(item.state == InstanceState.RUNNING for item in self.instances)
         self.total_metric.setText(f"Total: {len(self.instances)}")
         self.running_metric.setText(f"Running: {running}")
         self.assigned_metric.setText(f"Assigned: {self.bot_manager.assigned_count()}")
-        self.protection_metric.setText(self._protection_label())
-        guard_stats = self.windivert_guard.stats
-        self.guard_metric.setText(
-            f"Guard: {guard_stats.protected_pids} PIDs / "
-            f"{guard_stats.blocked_tcp} TCP + {guard_stats.blocked_udp} UDP blocked"
-        )
 
     def _build_row_actions(self, instance_index: int) -> QWidget:
         widget = QWidget()
@@ -375,16 +347,16 @@ class MainWindow(QMainWindow):
             return
         enabled = item.checkState() == Qt.Checked
         person = self.bot_manager.person(instance_index)
-        if enabled and person.proxy is None:
+        if enabled and person.wireguard_config is None:
             QMessageBox.information(
                 self,
-                "Assign proxy first",
-                f"Assign a SOCKS5 proxy to instance {instance_index} before enabling bot tasks.",
+                "Assign WireGuard first",
+                f"Assign a WireGuard .conf to instance {instance_index} before enabling bot tasks.",
             )
             self._render_task_table(instance_index)
             return
-        if enabled and instance_index not in self.bot_manager.routed_indexes():
-            self._start_task_after_routing(instance_index, item.row())
+        if enabled and (person.wireguard_check is None or person.wireguard_check[0] != "IP OK"):
+            self._start_task_after_wireguard_check(instance_index, item.row())
             self._render_task_table(instance_index)
             return
         person.set_task_enabled(item.row(), enabled)
@@ -417,7 +389,7 @@ class MainWindow(QMainWindow):
             task_item = QTableWidgetItem(task.name)
             enabled_item = QTableWidgetItem()
             flags = Qt.ItemIsUserCheckable | Qt.ItemIsSelectable
-            if person.proxy is not None:
+            if person.wireguard_config is not None:
                 flags |= Qt.ItemIsEnabled
             enabled_item.setFlags(flags)
             enabled_item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked)
@@ -439,10 +411,7 @@ class MainWindow(QMainWindow):
         for label, value in zip(self.bot_metrics, values):
             label.setText(value)
 
-    def _protected_pids(self, instance: EmulatorInstance) -> set[int]:
-        return instance.live_pids()
-
-    def _start_task_after_routing(self, instance_index: int, task_row: int) -> None:
+    def _start_task_after_wireguard_check(self, instance_index: int, task_row: int) -> None:
         instance = self._instance_by_index(instance_index)
         if instance is None or not instance.live_pids():
             QMessageBox.information(
@@ -452,22 +421,22 @@ class MainWindow(QMainWindow):
             )
             return
 
-        self.statusBar().showMessage(f"Starting proxy routing for instance {instance_index}...", 5000)
+        self.statusBar().showMessage(f"Checking WireGuard IP for instance {instance_index}...", 5000)
 
         def work() -> dict[str, Any]:
             return {
                 "instance_index": instance_index,
                 "task_row": task_row,
-                "routed_result": self._apply_saved_proxy_routing_blocking(instance_index),
+                "routed_result": self._apply_saved_wireguard_check_blocking(instance_index),
             }
 
         self._run_background(
             work,
-            self._finish_start_task_after_routing,
+            self._finish_start_task_after_wireguard_check,
             "Bot start failed",
         )
 
-    def _finish_start_task_after_routing(self, result: object) -> None:
+    def _finish_start_task_after_wireguard_check(self, result: object) -> None:
         if not isinstance(result, dict):
             self.refresh_instances()
             return
@@ -480,22 +449,11 @@ class MainWindow(QMainWindow):
             warning = routed_result.get("warning")
             if warning:
                 self.refresh_instances()
-                QMessageBox.warning(self, str(routed_result.get("title", "Proxy routing failed")), str(warning))
+                QMessageBox.warning(self, str(routed_result.get("title", "WireGuard check failed")), str(warning))
                 return
 
         self.bot_manager.person(instance_index).set_task_enabled(task_row, True)
         self.refresh_instances()
-        if not self._update_windivert_guard():
-            self.bot_manager.person(instance_index).set_task_enabled(task_row, False)
-            self.bot_manager.stop_routing(instance_index)
-            self._clear_emulator_proxy(instance_index)
-            self.refresh_instances()
-            QMessageBox.warning(
-                self,
-                "Kill switch failed",
-                f"WinDivert kill switch is not active: {self._protection_failure_message()}",
-            )
-            return
         self.render_selected_instance_tasks()
 
         message = "Bot task enabled"
@@ -514,196 +472,227 @@ class MainWindow(QMainWindow):
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         return [self.instances[row].index for row in rows]
 
-    def load_proxies_from_file(self) -> None:
-        proxy_file = self._resolve_proxy_file()
-        if proxy_file is None:
-            return
-
-        self._load_proxy_file(proxy_file)
-
-    def _resolve_proxy_file(self) -> Optional[Path]:
-        saved_proxy_file = self._saved_proxy_file()
-        if saved_proxy_file is not None:
-            return saved_proxy_file
-
-        discovered_proxy_file = self._discover_proxy_file()
-        if discovered_proxy_file is not None:
-            self._save_proxy_file(discovered_proxy_file)
-            return discovered_proxy_file
-
-        file_name, _ = QFileDialog.getOpenFileName(
-            self,
-            "Load SOCKS5 proxies",
-            str(Path.home() / "Downloads"),
-            "Text files (*.txt);;All files (*)",
-        )
-        if not file_name:
-            return None
-
-        proxy_file = Path(file_name)
-        self._save_proxy_file(proxy_file)
-        return proxy_file
-
-    def _load_proxy_file(self, proxy_file: Path) -> None:
-        try:
-            proxy_text = proxy_file.read_text(encoding="utf-8")
-        except OSError as exc:
-            QMessageBox.critical(self, "Proxy file error", str(exc))
-            return
-
-        parsed_proxies, errors = parse_proxy_text(proxy_text, "socks5")
-        proxies = []
-        for proxy in parsed_proxies:
-            if proxy.scheme != "socks5":
-                errors.append(f"Skipped {proxy.display}: only SOCKS5 proxies are supported")
-                continue
-            proxies.append(proxy)
-        self.proxies = proxies
-        self.proxy_cursor = 0
-        summary = f"SOCKS5 proxies: {len(proxies)}"
-        if errors:
-            summary += f" · Invalid: {len(errors)}"
-            QMessageBox.warning(self, "Some proxies were skipped", "\n".join(errors[:10]))
-        self._set_proxy_summary(summary)
-        self._render_instances()
-        self.statusBar().showMessage(f"{summary} from {proxy_file.name}", 5000)
-
-    def _saved_proxy_file(self) -> Optional[Path]:
-        try:
-            value = self.proxy_source_file.read_text(encoding="utf-8").strip()
-        except OSError:
-            return None
-        if not value:
-            return None
-        path = Path(value)
-        return path if path.is_file() and path.suffix.lower() == ".txt" else None
-
-    def _discover_proxy_file(self) -> Optional[Path]:
-        downloads = Path.home() / "Downloads"
-        if not downloads.is_dir():
-            return None
-
-        candidates = [path for path in downloads.glob("Webshare*.txt") if path.is_file()]
-        if not candidates:
-            candidates = [path for path in downloads.glob("*.txt") if path.is_file()]
-        if not candidates:
-            return None
-        return max(candidates, key=lambda path: path.stat().st_mtime)
-
-    def _save_proxy_file(self, proxy_file: Path) -> None:
-        try:
-            self.proxy_source_file.write_text(str(proxy_file.resolve()), encoding="utf-8")
-        except OSError:
-            pass
-
-    def clear_proxies(self) -> None:
-        self._clear_all_emulator_proxies()
-        self.proxies.clear()
-        self.bot_manager.clear_all_proxies()
-        self.windivert_guard.stop()
-        self.proxy_cursor = 0
-        self._set_proxy_summary("SOCKS5 proxies: 0")
-        self._save_proxy_assignments()
-        self._render_instances()
-
-    def assign_proxies(self) -> None:
+    def assign_wireguard_config(self) -> None:
         indexes = self.selected_indexes()
         if not indexes:
             QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
             return
-        if not self.proxies:
-            QMessageBox.information(self, "Load proxies", "Load a SOCKS5 proxy list before assigning proxies.")
+
+        config_path = self._choose_wireguard_config_file()
+        if config_path is None:
             return
 
-        assignment_mode, selected_proxy = self._choose_proxy_assignment(len(indexes))
-        if assignment_mode is None:
-            return
-
-        clear_failures: list[str] = []
-        if assignment_mode == "single":
-            proxy = selected_proxy
-            if proxy is None:
-                return
-            for instance_index in indexes:
-                clear_error = self._clear_emulator_proxy(instance_index)
-                if clear_error:
-                    clear_failures.append(f"Instance {instance_index}: {clear_error}")
-                self.bot_manager.assign_proxy(instance_index, proxy, self._check_proxy(proxy))
-        else:
-            for position, instance_index in enumerate(indexes):
-                proxy_index = (self.proxy_cursor + position) % len(self.proxies)
-                proxy = self.proxies[proxy_index]
-                clear_error = self._clear_emulator_proxy(instance_index)
-                if clear_error:
-                    clear_failures.append(f"Instance {instance_index}: {clear_error}")
-                self.bot_manager.assign_proxy(instance_index, proxy, self._check_proxy(proxy))
-            self.proxy_cursor += len(indexes)
-        self._save_proxy_assignments()
-        self._update_windivert_guard()
+        config = WireGuardConfig(str(config_path.resolve()))
+        for instance_index in indexes:
+            self.bot_manager.assign_wireguard(instance_index, config)
+        self._save_wireguard_config_file(config_path)
+        self._save_wireguard_assignments()
+        self._set_wireguard_summary(f"WireGuard configs: {self.bot_manager.assigned_count()}")
         self._render_instances()
-        if clear_failures:
-            QMessageBox.warning(self, "Some Android proxies were not cleared", "\n".join(clear_failures[:10]))
-        self.statusBar().showMessage(f"Assigned proxies to {len(indexes)} instance(s)", 5000)
+        self.statusBar().showMessage(f"Assigned {config.display} to {len(indexes)} instance(s)", 5000)
 
-    def _load_proxy_assignments(self) -> None:
+    def install_or_import_wireguard(self) -> None:
+        indexes = self.selected_indexes()
+        if not indexes:
+            QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
+            return
+
+        missing = [index for index in indexes if self.bot_manager.person(index).wireguard_config is None]
+        if missing:
+            QMessageBox.information(
+                self,
+                "Assign config first",
+                "Assign a WireGuard .conf before installing/importing it.",
+            )
+            return
+
+        self.statusBar().showMessage("Installing/importing WireGuard config...", 5000)
+
+        def work() -> dict[str, object]:
+            results: list[str] = []
+            for instance_index in indexes:
+                config = self.bot_manager.person(instance_index).wireguard_config
+                if config is None:
+                    continue
+                result = self.wireguard_manager.ensure_installed_and_imported(
+                    instance_index,
+                    Path(config.file_path),
+                )
+                self.bot_manager.person(instance_index).wireguard_check = ("Installed", "Pending IP check")
+                import_note = "import opened" if result.import_started else "open WireGuard and import from Downloads"
+                results.append(f"Instance {instance_index}: {import_note}")
+            return {"results": results}
+
+        self._run_background(work, self._finish_wireguard_setup, "WireGuard setup failed")
+
+    def _finish_wireguard_setup(self, result: object) -> None:
+        self.refresh_instances()
+        results = []
+        if isinstance(result, dict):
+            raw_results = result.get("results")
+            if isinstance(raw_results, list):
+                results = [str(item) for item in raw_results]
+        if results:
+            QMessageBox.information(self, "WireGuard setup", "\n".join(results[:12]))
+        self.statusBar().showMessage("WireGuard setup finished", 5000)
+
+    def open_wireguard_app(self) -> None:
+        indexes = self.selected_indexes()
+        if not indexes:
+            QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
+            return
+
+        failures: list[str] = []
+        for instance_index in indexes:
+            try:
+                if not self.wireguard_manager.is_installed(instance_index):
+                    config = self.bot_manager.person(instance_index).wireguard_config
+                    if config is None:
+                        raise RuntimeError("assign a WireGuard .conf first")
+                    self.wireguard_manager.ensure_installed_and_imported(instance_index, Path(config.file_path))
+                self.wireguard_manager.open_app(instance_index)
+            except Exception as exc:
+                failures.append(f"Instance {instance_index}: {exc}")
+        if failures:
+            QMessageBox.warning(self, "Open WireGuard failed", "\n".join(failures[:10]))
+        else:
+            self.statusBar().showMessage(f"Opened WireGuard on {len(indexes)} instance(s)", 5000)
+
+    def check_selected_wireguard_ips(self) -> None:
+        indexes = self.selected_indexes()
+        if not indexes:
+            QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
+            return
+
+        self.statusBar().showMessage("Checking public IP inside selected emulator(s)...", 5000)
+
+        def work() -> dict[str, object]:
+            results: list[str] = []
+            failures: list[str] = []
+            for instance_index in indexes:
+                try:
+                    public_ip = self.wireguard_manager.public_ip(instance_index)
+                    self.bot_manager.person(instance_index).wireguard_check = ("IP OK", public_ip)
+                    results.append(f"Instance {instance_index}: {public_ip}")
+                except Exception as exc:
+                    self.bot_manager.person(instance_index).wireguard_check = ("IP check failed", str(exc))
+                    failures.append(f"Instance {instance_index}: {exc}")
+            return {"results": results, "failures": failures}
+
+        self._run_background(work, self._finish_wireguard_ip_check, "WireGuard IP check failed")
+
+    def _finish_wireguard_ip_check(self, result: object) -> None:
+        self.refresh_instances()
+        results: list[str] = []
+        failures: list[str] = []
+        if isinstance(result, dict):
+            raw_results = result.get("results")
+            raw_failures = result.get("failures")
+            if isinstance(raw_results, list):
+                results = [str(item) for item in raw_results]
+            if isinstance(raw_failures, list):
+                failures = [str(item) for item in raw_failures]
+        if failures:
+            QMessageBox.warning(self, "Some IP checks failed", "\n".join(failures[:10]))
+        if results:
+            self.statusBar().showMessage("; ".join(results[:3]), 8000)
+
+    def clear_wireguard_configs(self) -> None:
+        indexes = self.selected_indexes()
+        target_indexes = indexes or list(self.bot_manager.people)
+        for instance_index in target_indexes:
+            self.bot_manager.person(instance_index).clear_wireguard()
+        self._save_wireguard_assignments()
+        self._set_wireguard_summary(f"WireGuard configs: {self.bot_manager.assigned_count()}")
+        self._render_instances()
+        self.statusBar().showMessage(f"Cleared WireGuard config(s) for {len(target_indexes)} instance(s)", 5000)
+
+    def _choose_wireguard_config_file(self) -> Optional[Path]:
+        last_config = self._saved_wireguard_config_file()
+        start_dir = last_config.parent if last_config is not None else self._default_wireguard_dir()
+        file_name, _ = QFileDialog.getOpenFileName(
+            self,
+            "Assign WireGuard config",
+            str(start_dir),
+            "WireGuard configs (*.conf);;All files (*)",
+        )
+        return Path(file_name) if file_name else None
+
+    def _default_wireguard_dir(self) -> Path:
+        work_dir = Path.cwd().parent / "work"
+        if work_dir.is_dir():
+            return work_dir
+        downloads = Path.home() / "Downloads"
+        return downloads if downloads.is_dir() else Path.home()
+
+    def _saved_wireguard_config_file(self) -> Optional[Path]:
         try:
-            raw_assignments = json.loads(self.proxy_assignment_file.read_text(encoding="utf-8"))
+            value = self.wireguard_source_file.read_text(encoding="utf-8").strip()
+        except OSError:
+            return None
+        path = Path(value)
+        return path if path.is_file() and path.suffix.lower() == ".conf" else None
+
+    def _save_wireguard_config_file(self, config_path: Path) -> None:
+        try:
+            self.wireguard_source_file.write_text(str(config_path.resolve()), encoding="utf-8")
+        except OSError:
+            pass
+
+    def _load_wireguard_assignments(self) -> None:
+        try:
+            raw_assignments = json.loads(self.wireguard_assignment_file.read_text(encoding="utf-8"))
         except FileNotFoundError:
             return
         except (OSError, json.JSONDecodeError) as exc:
-            QMessageBox.warning(self, "Proxy assignment error", f"Could not load saved assignments: {exc}")
+            QMessageBox.warning(self, "WireGuard assignment error", f"Could not load saved assignments: {exc}")
             return
         if not isinstance(raw_assignments, dict):
-            QMessageBox.warning(self, "Proxy assignment error", "Saved proxy assignments must be a JSON object.")
+            QMessageBox.warning(self, "WireGuard assignment error", "Saved WireGuard assignments must be a JSON object.")
             return
 
         loaded = 0
         errors: list[str] = []
-        for instance_key, proxy_url in raw_assignments.items():
+        for instance_key, config_value in raw_assignments.items():
             instance_index = self._instance_index_for_assignment_key(instance_key)
             if instance_index is None:
                 errors.append(f"{instance_key}: instance not found")
                 continue
-            if not isinstance(proxy_url, str):
-                errors.append(f"Instance {instance_index}: proxy must be text")
+            if not isinstance(config_value, str):
+                errors.append(f"Instance {instance_index}: config path must be text")
                 continue
-            try:
-                proxy = parse_proxy_line(proxy_url, "socks5")
-            except (ValueError, TypeError) as exc:
-                errors.append(f"Instance {instance_index}: {exc}")
+            config_path = Path(config_value)
+            if not config_path.is_file():
+                errors.append(f"Instance {instance_index}: config file was not found")
                 continue
-            if proxy.scheme != "socks5":
-                errors.append(f"Instance {instance_index}: only SOCKS5 proxies are supported")
-                continue
-            self.bot_manager.assign_proxy(instance_index, proxy)
+            self.bot_manager.assign_wireguard(instance_index, WireGuardConfig(str(config_path.resolve())))
             loaded += 1
 
         if loaded:
-            self._set_proxy_summary(f"Saved assignments: {loaded}")
-            self.statusBar().showMessage(f"Loaded {loaded} saved proxy assignment(s)", 5000)
+            self._set_wireguard_summary(f"WireGuard configs: {loaded}")
+            self.statusBar().showMessage(f"Loaded {loaded} saved WireGuard assignment(s)", 5000)
         if errors:
-            QMessageBox.warning(self, "Some saved assignments were skipped", "\n".join(errors[:10]))
-        if loaded:
-            self._save_proxy_assignments()
+            QMessageBox.warning(self, "Some saved WireGuard assignments were skipped", "\n".join(errors[:10]))
 
-    def _save_proxy_assignments(self) -> None:
+    def _save_wireguard_assignments(self) -> None:
         assignments = {}
         for instance_index, person in sorted(self.bot_manager.people.items()):
-            if person.proxy is None:
+            config = person.wireguard_config
+            if config is None:
                 continue
             key = self._assignment_key(instance_index)
             if key is not None:
-                assignments[key] = person.proxy.connection_url
+                assignments[key] = config.file_path
         try:
             if assignments:
-                self.proxy_assignment_file.write_text(
+                self.wireguard_assignment_file.write_text(
                     json.dumps(assignments, indent=2, sort_keys=True),
                     encoding="utf-8",
                 )
-            elif self.proxy_assignment_file.exists():
-                self.proxy_assignment_file.unlink()
+            elif self.wireguard_assignment_file.exists():
+                self.wireguard_assignment_file.unlink()
         except OSError as exc:
-            QMessageBox.warning(self, "Proxy assignment error", f"Could not save assignments: {exc}")
+            QMessageBox.warning(self, "WireGuard assignment error", f"Could not save assignments: {exc}")
 
     def _assignment_key(self, instance_index: int) -> Optional[str]:
         return str(instance_index)
@@ -723,230 +712,12 @@ class MainWindow(QMainWindow):
             return key
         return None
 
-    def _choose_proxy_assignment(self, selected_count: int) -> tuple[Optional[str], Optional[ProxyConfig]]:
-        proxy_items = [f"{index + 1}. {proxy.host}:{proxy.port}" for index, proxy in enumerate(self.proxies)]
-        items = proxy_items.copy()
-        auto_label = "Auto assign different proxies"
-        if selected_count > 1:
-            items.insert(0, auto_label)
-
-        choice, accepted = QInputDialog.getItem(
-            self,
-            "Assign proxy",
-            "Select proxy:",
-            items,
-            0,
-            False,
-        )
-        if not accepted:
-            return None, None
-        if choice == auto_label:
-            return "auto", None
-
-        proxy_index = proxy_items.index(choice)
-        return "single", self.proxies[proxy_index]
-
-    def start_proxy_routing(self) -> None:
-        indexes = self.selected_indexes()
-        if not indexes:
-            QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
-            return
-
-        failures: list[str] = []
-        applied_routes: list[str] = []
-        started_indexes: list[int] = []
-        started = 0
-        for instance_index in indexes:
-            person = self.bot_manager.person(instance_index)
-            proxy = person.proxy
-            if proxy is None:
-                failures.append(f"Instance {instance_index}: assign a proxy first")
-                continue
-            instance = self._instance_by_index(instance_index)
-            if instance is None or not instance.live_pids():
-                failures.append(f"Instance {instance_index}: start LDPlayer before enabling tunnel protection")
-                continue
-            status, proxy_ip = self._check_proxy(proxy)
-            person.proxy_check = (status, proxy_ip)
-            if status != "Running":
-                failures.append(f"Instance {instance_index}: proxy check failed ({status})")
-                continue
-            try:
-                route_pids = instance.live_pids()
-                self.redirect_engine.start_many(instance_index, route_pids, proxy)
-                self.bot_manager.start_direct_routing(instance_index)
-                clear_error = self._clear_emulator_proxy(instance_index)
-                if clear_error:
-                    failures.append(f"Instance {instance_index}: tunnel started, but Android proxy cleanup failed ({clear_error})")
-                person.proxy_check = ("Tunnel", proxy_ip)
-                applied_routes.append(
-                    f"Instance {instance_index}: Wintun -> {proxy.host}"
-                )
-                started_indexes.append(instance_index)
-                started += 1
-            except Exception as exc:
-                self.redirect_engine.stop(instance_index)
-                self.bot_manager.stop_routing(instance_index)
-                self._clear_emulator_proxy(instance_index)
-                failures.append(f"Instance {instance_index}: {exc}")
-
-        guard_ready = self._update_windivert_guard()
-        if started and not guard_ready:
-            for instance_index in started_indexes:
-                self.redirect_engine.stop(instance_index)
-                self.bot_manager.stop_routing(instance_index)
-                self._clear_emulator_proxy(instance_index)
-            started = 0
-            applied_routes.clear()
-            failures.append(f"WinDivert kill switch is not active: {self._protection_failure_message()}")
-        self._render_instances()
-        if failures:
-            QMessageBox.warning(self, "Some routing sessions failed", "\n".join(failures))
-        if started:
-            self._show_routing_status(started, applied_routes)
-
-    def stop_proxy_routing(self) -> None:
-        indexes = self.selected_indexes()
-        if not indexes:
-            QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
-            return
-
-        self.windivert_guard.stop()
-        for instance_index in indexes:
-            self.redirect_engine.stop(instance_index)
-            self.bot_manager.stop_routing(instance_index)
-            self._clear_emulator_proxy(instance_index)
-            self.bot_manager.person(instance_index).proxy_check = None
-        if not self.bot_manager.routed_indexes():
-            self.redirect_engine.stop_all()
-            self.redirect_engine.cleanup_stale_routes()
-        self._update_windivert_guard()
-        self._render_instances()
-        self.statusBar().showMessage(f"Stopped proxy routing for {len(indexes)} instance(s)", 5000)
-
-    def check_selected_proxies(self) -> None:
-        indexes = self.selected_indexes()
-        if not indexes:
-            QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
-            return
-
-        checked = 0
-        for instance_index in indexes:
-            person = self.bot_manager.person(instance_index)
-            proxy = person.proxy
-            if not proxy:
-                continue
-            person.proxy_check = self._check_proxy(proxy)
-            checked += 1
-        self._render_instances()
-        self.statusBar().showMessage(f"Checked {checked} assigned proxy/proxies", 5000)
-
-    def _check_proxy(self, proxy: ProxyConfig) -> tuple[str, str]:
-        return check_proxy(proxy)
-
-    def _protection_label(self) -> str:
-        if self.windivert_guard.running:
-            return "Protection: Kill switch on"
-        if self.windivert_status.available:
-            return "Protection: WinDivert ready"
-        return f"Protection: {self.windivert_status.message}"
-
-    def _show_routing_status(self, started: int, applied_routes: list[str]) -> None:
-        applied_text = "\n".join(applied_routes[:8])
-        if len(applied_routes) > 8:
-            applied_text += f"\n...and {len(applied_routes) - 8} more"
-        final_status = f"Started proxy routing for {started} instance(s)"
-        if self.windivert_guard.running:
-            QMessageBox.information(
-                self,
-                "Routing protected",
-                "Wintun/tun2socks tunnel is running, and the leak guard is active "
-                "for LDPlayer-related process IDs.\n\n"
-                f"Tunnel route:\n{applied_text}\n\n"
-                "TCP should leave through the assigned SOCKS proxy. "
-                "Unhandled UDP traffic is blocked for protected emulator processes.",
-            )
-        else:
-            final_status += f" - kill switch failed: {self._protection_failure_message()}"
-        self.statusBar().showMessage(final_status, 5000)
-
-    def _update_windivert_guard(self) -> bool:
-        pids = self._active_routed_pids()
-        if not pids:
-            self.windivert_guard.stop()
-            return True
-        if self.windivert_guard.running:
-            self.windivert_guard.update_pids(pids, block_public_tcp=not self.redirect_engine.running)
-            return True
-        self.windivert_status = check_windivert()
-        if self.windivert_status.available:
-            self.windivert_guard.start(pids, block_public_tcp=not self.redirect_engine.running)
-            time_limit = time.monotonic() + 2.0
-            while time.monotonic() < time_limit:
-                if self.windivert_guard.running:
-                    return True
-                if self.windivert_guard.stats.last_error:
-                    return False
-                time.sleep(0.05)
-        return self.windivert_guard.running
-
-    def _protection_failure_message(self) -> str:
-        if self.windivert_guard.stats.last_error:
-            return self.windivert_guard.stats.last_error
-        if self.redirect_engine.last_error:
-            return self.redirect_engine.last_error
-        return self.windivert_status.message
-
-    def _active_routed_pids(self) -> set[int]:
-        instance_pids = self.bot_manager.routed_pids()
-        if not instance_pids:
-            return set()
-        protected_pids: set[int] = set()
-        for instance_index in self.bot_manager.routed_indexes():
-            instance = self._instance_by_index(instance_index)
-            if instance is not None:
-                protected_pids.update(self._protected_pids(instance))
-        return instance_pids | protected_pids | ldplayer_related_pids()
-
     def _instance_by_index(self, instance_index: int) -> Optional[EmulatorInstance]:
         return next((instance for instance in self.instances if instance.index == instance_index), None)
 
-    def _display_instance_index(self, instance: EmulatorInstance) -> str:
-        return str(instance.index)
-
-    def _clear_emulator_proxy(self, instance_index: int) -> Optional[str]:
-        try:
-            self.provider.clear_http_proxy(instance_index)
-        except Exception as exc:
-            return str(exc)
-        return None
-
-    def _clear_all_emulator_proxies(self) -> None:
-        for instance_index in list(self.bot_manager.routed_indexes()):
-            self._clear_emulator_proxy(instance_index)
-
-    def _set_proxy_summary(self, text: str) -> None:
-        if self.proxy_summary is not None:
-            self.proxy_summary.setText(text)
-
-    def _run_selected(self, action: Callable[[int], None], verb: str) -> None:
-        indexes = self.selected_indexes()
-        if not indexes:
-            QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
-            return
-
-        failures: list[str] = []
-        for index in indexes:
-            try:
-                action(index)
-            except Exception as exc:
-                failures.append(f"Instance {index}: {exc}")
-        self.refresh_instances()
-
-        if failures:
-            QMessageBox.warning(self, "Some actions failed", "\n".join(failures))
-        else:
-            self.statusBar().showMessage(f"{len(indexes)} instance(s) {verb}", 5000)
+    def _set_wireguard_summary(self, text: str) -> None:
+        if self.wireguard_summary is not None:
+            self.wireguard_summary.setText(text)
 
     def _run_instance_action(
         self,
@@ -1072,53 +843,29 @@ class MainWindow(QMainWindow):
             self.statusBar().showMessage(f"No matching stones found on instance {instance_index}", 5000)
         self._render_task_table(instance_index)
 
-    def _apply_saved_proxy_routing_blocking(self, instance_index: int) -> Optional[dict[str, str]]:
+    def _apply_saved_wireguard_check_blocking(self, instance_index: int) -> Optional[dict[str, str]]:
         person = self.bot_manager.person(instance_index)
-        proxy = person.proxy
-        if proxy is None:
-            return None
-
-        status, proxy_ip = self._check_proxy(proxy)
-        person.proxy_check = (status, proxy_ip)
-        if status != "Running":
+        config = person.wireguard_config
+        if config is None:
             return {
-                "title": "Saved proxy failed",
-                "warning": f"Instance {instance_index} has a saved proxy, but the proxy check failed ({status}).",
-            }
-        instance = self._instance_by_index(instance_index)
-        if instance is None or not instance.live_pids():
-            return {
-                "title": "Proxy routing failed",
-                "warning": f"Instance {instance_index}: start LDPlayer before enabling tunnel protection.",
+                "title": "WireGuard config missing",
+                "warning": f"Instance {instance_index}: assign a WireGuard .conf first.",
             }
 
         try:
-            route_pids = instance.live_pids()
-            self.redirect_engine.start_many(instance_index, route_pids, proxy)
-            self.bot_manager.start_direct_routing(instance_index)
-            clear_error = self._clear_emulator_proxy(instance_index)
-            person.proxy_check = ("Tunnel", proxy_ip)
-            applied_proxy = "Wintun"
+            self.wireguard_manager.ensure_installed_and_imported(instance_index, Path(config.file_path))
+            public_ip = self.wireguard_manager.public_ip(instance_index)
         except Exception as exc:
-            self.bot_manager.stop_routing(instance_index)
-            self._clear_emulator_proxy(instance_index)
-            self.redirect_engine.stop(instance_index)
+            person.wireguard_check = ("IP check failed", str(exc))
             return {
-                "title": "Proxy routing failed",
+                "title": "WireGuard check failed",
                 "warning": f"Instance {instance_index}: {exc}",
             }
 
+        person.wireguard_check = ("IP OK", public_ip)
         return {
-            "message": (
-                f"Bot task started tunnel route for instance {instance_index}: "
-                f"{applied_proxy} -> {person.proxy_check[1]}"
-                + (f" (Android proxy cleanup failed: {clear_error})" if clear_error else "")
-            )
+            "message": f"WireGuard IP check for instance {instance_index}: {public_ip}"
         }
 
     def closeEvent(self, event: QCloseEvent) -> None:
-        self._clear_all_emulator_proxies()
-        self.redirect_engine.stop_all()
-        self.windivert_guard.stop()
-        self.bot_manager.clear_all_proxies()
         super().closeEvent(event)

@@ -3,6 +3,7 @@ from __future__ import annotations
 from typing import Optional
 from dataclasses import dataclass
 from enum import Enum
+from pathlib import Path
 
 
 class InstanceState(str, Enum):
@@ -20,7 +21,7 @@ class EmulatorInstance:
     pid: Optional[int] = None
     platform: str = "LDPlayer"
     identity: Optional[str] = None
-    proxy: Optional[str] = None
+    network: Optional[str] = None
     pids: Optional[set[int]] = None
 
     def live_pids(self) -> set[int]:
@@ -31,24 +32,21 @@ class EmulatorInstance:
 
 
 @dataclass(frozen=True)
-class ProxyConfig:
-    scheme: str
-    host: str
-    port: int
-    username: Optional[str] = None
-    password: Optional[str] = None
+class WireGuardConfig:
+    path: str
+
+    @property
+    def file_path(self) -> str:
+        return self.path
+
+    @property
+    def name(self) -> str:
+        return Path(self.path).stem
 
     @property
     def display(self) -> str:
-        credentials = f"{self.username}:••••@" if self.username else ""
-        return f"{self.scheme}://{credentials}{self.host}:{self.port}"
+        return f"{self.name}.conf"
 
     @property
     def connection_url(self) -> str:
-        credentials = ""
-        if self.username:
-            credentials = self.username
-            if self.password is not None:
-                credentials += f":{self.password}"
-            credentials += "@"
-        return f"{self.scheme}://{credentials}{self.host}:{self.port}"
+        return self.path

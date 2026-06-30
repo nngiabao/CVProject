@@ -31,15 +31,6 @@ class EmulatorProvider(ABC):
     def restart(self, index: int) -> None:
         raise NotImplementedError
 
-    def set_http_proxy(self, index: int, host: str, port: int) -> str:
-        raise NotImplementedError("HTTP proxy configuration is not supported by this emulator provider")
-
-    def clear_http_proxy(self, index: int) -> None:
-        raise NotImplementedError("HTTP proxy configuration is not supported by this emulator provider")
-
-    def get_http_proxy(self, index: int) -> str:
-        raise NotImplementedError("HTTP proxy configuration is not supported by this emulator provider")
-
     def screenshot_png(self, index: int) -> bytes:
         raise NotImplementedError("Screenshot capture is not supported by this emulator provider")
 

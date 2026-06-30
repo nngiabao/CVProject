@@ -31,7 +31,7 @@ class MockEmulatorProvider(EmulatorProvider):
                 state=item.state,
                 pid=item.pid,
                 platform=item.platform,
-                proxy=item.proxy,
+                network=item.network,
             )
             for item in self._instances
         ]
@@ -49,17 +49,6 @@ class MockEmulatorProvider(EmulatorProvider):
     def restart(self, index: int) -> None:
         self.stop(index)
         self.start(index)
-
-    def set_http_proxy(self, index: int, host: str, port: int) -> str:
-        proxy = f"{host}:{port}"
-        self._find(index).proxy = proxy
-        return proxy
-
-    def clear_http_proxy(self, index: int) -> None:
-        self._find(index).proxy = None
-
-    def get_http_proxy(self, index: int) -> str:
-        return self._find(index).proxy or ""
 
     def screenshot_png(self, index: int) -> bytes:
         return base64.b64decode(

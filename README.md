@@ -1,9 +1,9 @@
-# Emulator Proxy Manager
+# GrowStone Bot
 
-Python desktop application for managing LDPlayer instances and assigning proxy
-configurations. It includes emulator discovery and lifecycle controls, proxy
-import/assignment, and a Wintun/tun2socks tunnel through assigned SOCKS5
-proxies with a WinDivert leak guard.
+Python desktop application for managing LDPlayer instances and bot tasks.
+Network assignment is now per-emulator WireGuard config based: each LDPlayer
+instance can be assigned its own `.conf` file, then the app can install/open the
+official WireGuard Android app and push that config into the emulator.
 
 ## Run
 
@@ -16,61 +16,31 @@ python -m pip install -r requirements.txt
 python main.py
 ```
 
-On Windows, the application automatically requests Administrator access through
-UAC. LDPlayer control, Wintun routing, and WinDivert protection require
-elevation.
-
 The application searches common LDPlayer installation folders. Set
 `LDPLAYER_CONSOLE` to the full path of `dnconsole.exe` or `ldconsole.exe` when
 LDPlayer is installed elsewhere.
 
-Instance discovery uses LDPlayer's `list2` command. The reported PID is verified
-against Windows every three seconds so the dashboard can distinguish running,
-starting, stopped, and stale instances.
+## WireGuard workflow
 
-If LDPlayer is not found, the application opens in demo mode with sample
-instances so the interface can still be developed and reviewed.
+1. Start the LDPlayer instance and enable local ADB connection in LDPlayer.
+2. Select one or more emulator rows.
+3. Use **Assign .conf** and choose a WireGuard config file.
+4. Use **Install / import**. If WireGuard is missing, the app installs the APK
+   from the workspace `work` folder, copies the config to Android Downloads, and
+   opens the import flow when Android allows it.
+5. Turn the tunnel on inside WireGuard, then use **Check VPN IP** before bot
+   tasks run.
 
-## Proxy workflow
-
-Proxy assignment is SOCKS5-only. Use **Load SOCKS5 proxies** to import a text
-file with one proxy per line, select one or more emulator rows, then use
-**Assign proxy to selected**. The instance table shows assignment state, the
-resolved proxy IP, and whether the authenticated proxy check passed.
-
-The app remembers the selected proxy text file in `.proxy_source.txt`. If that
-file is missing, it looks for a Webshare text file in Downloads before opening
-the file picker.
-
-Proxy assignments are saved by LDPlayer instance index in `.proxy_assignments.json`
-and loaded automatically on startup. Bot tasks stay disabled until the selected
-instance has an assigned SOCKS5 proxy.
-
-## Routing workflow
-
-Use **Start proxy routing** after assigning proxies to selected instances. The
-app starts `tools/tun2socks/tun2socks.exe` with `wintun.dll`, creates the
-`GrowStoneTun` Wintun adapter, and sends IPv4 traffic through the assigned
-SOCKS5 proxy.
-
-The app clears Android's global HTTP proxy setting before routing starts. LDPlayer
-does not need manual Wi-Fi proxy configuration; the tunnel happens from Windows.
-
-The tunnel is system-level, so only one SOCKS5 proxy can own it at a time. If you
-need to change to another proxy, stop proxy routing first and then start it again
-with the new assignment.
-
-When **Start proxy routing** is used on running LDPlayer instances, the app also
-enables a Python-side WinDivert leak guard for those instance PIDs. It blocks
-unhandled UDP traffic, and if the tunnel is not running it also blocks direct
-public TCP so the emulator should lose internet instead of exposing the real IP.
+Assignments are saved in `.wireguard_assignments.json` by LDPlayer instance
+index and loaded automatically on startup. The most recently chosen config path
+is remembered in `.wireguard_source.txt`.
 
 ## Bot model
 
 The UI is backed by a small object model in `app/bot.py`. `BotManager` owns one
-`BotPerson` per emulator instance. Each person keeps its assigned proxy, proxy
-check result, routing session, and independent task list. The right-side task
-panel displays and edits the selected person's tasks.
+`BotPerson` per emulator instance. Each person keeps its assigned WireGuard
+config, latest IP check result, and independent task list. Bot tasks stay
+disabled until the selected instance has a WireGuard config assigned.
 
 ## Stone merge feature
 
@@ -79,5 +49,6 @@ template images in `assets/templates/stones/`. The scanner captures the emulator
 screen, searches only the bottom third of the 720x1080 screen, and returns drag
 coordinates when it finds two matching stones of the same template.
 
-When the **Merge stones** task is enabled, the app captures the selected
-instance, finds a merge candidate, and executes the drag through ADB input.
+When the **Merge stones** task is enabled, the app checks the emulator public IP,
+captures the selected instance, finds a merge candidate, and executes the drag
+through ADB input.

@@ -22,7 +22,7 @@ def main() -> int:
             return 0
 
     application = QApplication(sys.argv)
-    application.setApplicationName("Emulator Proxy Manager")
+    application.setApplicationName("GrowStone Bot")
     application.setStyle("Fusion")
     application.setStyleSheet(APP_STYLE)
 

@@ -38,9 +38,9 @@ def show_elevation_error() -> None:
         return
     ctypes.windll.user32.MessageBoxW(
         None,
-        "Administrator access is required to control LDPlayer, configure ADB proxy "
-        "settings, and run WinDivert proxy protection.",
-        "Emulator Proxy Manager",
+        "Administrator access is required to control LDPlayer and configure "
+        "WireGuard through ADB.",
+        "GrowStone Bot",
         0x10,
     )
 
