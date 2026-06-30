@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import threading
+import time
 from typing import Any, Optional
 from collections.abc import Callable
 from pathlib import Path
@@ -28,9 +29,13 @@ from PySide6.QtWidgets import (
 
 from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
-from app.features.stone_merge import StoneMergeScanner
+from app.features.stone_merge import OpenCvUnavailableError, StoneMergeScanner, StoneTemplateUnavailableError
 from app.models import EmulatorInstance, InstanceState, WireGuardConfig
 from app.wireguard import WireGuardEmulatorManager
+
+
+MAX_STONE_MERGES_PER_RUN = 20
+STONE_MERGE_SETTLE_SECONDS = 0.65
 
 
 class BackgroundSignals(QObject):
@@ -813,18 +818,36 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Scanning stones for instance {instance_index}...", 5000)
 
         def work() -> dict[str, object]:
-            screenshot = self.provider.screenshot_png(instance_index)
-            candidate = self.stone_scanner.find_merge_candidate(screenshot)
-            if candidate is None:
-                return {"instance_index": instance_index, "task_row": task_row, "merged": False}
-            self.provider.drag(instance_index, candidate.drag_from, candidate.drag_to)
+            merges: list[dict[str, object]] = []
+            try:
+                for _ in range(MAX_STONE_MERGES_PER_RUN):
+                    screenshot = self.provider.screenshot_png(instance_index)
+                    candidate = self.stone_scanner.find_merge_candidate(screenshot)
+                    if candidate is None:
+                        break
+                    self.provider.drag(instance_index, candidate.drag_from, candidate.drag_to)
+                    merges.append(
+                        {
+                            "template": candidate.template_name,
+                            "from": candidate.drag_from,
+                            "to": candidate.drag_to,
+                        }
+                    )
+                    time.sleep(STONE_MERGE_SETTLE_SECONDS)
+            except (OpenCvUnavailableError, StoneTemplateUnavailableError, ValueError, RuntimeError) as exc:
+                return {
+                    "instance_index": instance_index,
+                    "task_row": task_row,
+                    "error": str(exc),
+                    "merged_count": len(merges),
+                }
+
             return {
                 "instance_index": instance_index,
                 "task_row": task_row,
-                "merged": True,
-                "template": candidate.template_name,
-                "from": candidate.drag_from,
-                "to": candidate.drag_to,
+                "merged_count": len(merges),
+                "merges": merges,
+                "hit_limit": len(merges) >= MAX_STONE_MERGES_PER_RUN,
             }
 
         self._run_background(
@@ -843,12 +866,21 @@ class MainWindow(QMainWindow):
         tasks = person.tasks or []
         if task_row >= len(tasks):
             return
-        if result.get("merged"):
-            start = result.get("from")
-            end = result.get("to")
-            tasks[task_row].status = "Merged"
+        error = result.get("error")
+        merged_count = int(result.get("merged_count", 0))
+        if error:
+            tasks[task_row].status = "Error"
+            QMessageBox.warning(self, "Merge stones", str(error))
+            self.statusBar().showMessage(f"Merge stones failed on instance {instance_index}", 5000)
+        elif merged_count:
+            merges = result.get("merges")
+            last_merge = merges[-1] if isinstance(merges, list) and merges else {}
+            start = last_merge.get("from") if isinstance(last_merge, dict) else None
+            end = last_merge.get("to") if isinstance(last_merge, dict) else None
+            tasks[task_row].status = f"Merged {merged_count}"
+            limit_note = " (limit reached)" if result.get("hit_limit") else ""
             self.statusBar().showMessage(
-                f"Merged {result.get('template')} on instance {instance_index}: {start} -> {end}",
+                f"Merged {merged_count} pair(s) on instance {instance_index}: {start} -> {end}{limit_note}",
                 5000,
             )
         else:

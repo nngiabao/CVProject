@@ -21,6 +21,10 @@ class OpenCvUnavailableError(RuntimeError):
     pass
 
 
+class StoneTemplateUnavailableError(RuntimeError):
+    pass
+
+
 @dataclass(frozen=True)
 class TemplateMatch:
     template_name: str
@@ -76,9 +80,15 @@ class StoneMergeScanner:
 
     def find_matches(self, screenshot: Any) -> list[TemplateMatch]:
         cv2, _ = load_opencv()
+        template_paths = self._template_paths()
+        if not template_paths:
+            raise StoneTemplateUnavailableError(
+                f"No stone templates found in {self.template_dir}. "
+                "Add cropped .png/.jpg stone images before running Merge stones."
+            )
         scan_area, y_offset = bottom_scan_area(screenshot)
         matches: list[TemplateMatch] = []
-        for template_path in self._template_paths():
+        for template_path in template_paths:
             template = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
             if template is None:
                 continue
