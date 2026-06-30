@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 
-BOTTOM_SCAN_RATIO = 1 / 3
+DEFAULT_BAG_REGION = (27, 438, 516, 199)
 DEFAULT_MATCH_THRESHOLD = 0.88
 DEFAULT_MIN_DISTANCE = 24
 OPENCV_INSTALL_HINT = (
@@ -23,6 +23,26 @@ class OpenCvUnavailableError(RuntimeError):
 
 class StoneTemplateUnavailableError(RuntimeError):
     pass
+
+
+class StoneTemplateSelectionError(RuntimeError):
+    pass
+
+
+@dataclass(frozen=True)
+class ScanRegion:
+    x: int
+    y: int
+    width: int
+    height: int
+
+    @property
+    def right(self) -> int:
+        return self.x + self.width
+
+    @property
+    def bottom(self) -> int:
+        return self.y + self.height
 
 
 @dataclass(frozen=True)
@@ -60,10 +80,16 @@ class StoneMergeScanner:
         template_dir: Path,
         threshold: float = DEFAULT_MATCH_THRESHOLD,
         min_distance: int = DEFAULT_MIN_DISTANCE,
+        scan_region: ScanRegion = ScanRegion(*DEFAULT_BAG_REGION),
     ) -> None:
         self.template_dir = template_dir
         self.threshold = threshold
         self.min_distance = min_distance
+        self.scan_region = scan_region
+        self.enabled_templates: Optional[set[str]] = None
+
+    def set_enabled_templates(self, names: Optional[set[str]]) -> None:
+        self.enabled_templates = names
 
     def find_merge_candidate(self, screenshot_png: bytes) -> Optional[MergeCandidate]:
         screenshot = decode_png(screenshot_png)
@@ -82,28 +108,78 @@ class StoneMergeScanner:
         cv2, _ = load_opencv()
         template_paths = self._template_paths()
         if not template_paths:
+            if self.enabled_templates is not None and not self.enabled_templates:
+                raise StoneTemplateSelectionError("No stone templates are enabled for merging.")
             raise StoneTemplateUnavailableError(
                 f"No stone templates found in {self.template_dir}. "
                 "Add cropped .png/.jpg stone images before running Merge stones."
             )
-        scan_area, y_offset = bottom_scan_area(screenshot)
+        scan_area, x_offset, y_offset = scan_area_for_region(screenshot, self.scan_region)
         matches: list[TemplateMatch] = []
         for template_path in template_paths:
             template = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
             if template is None:
                 continue
-            raw_matches = match_template(scan_area, template, template_path.stem, self.threshold, y_offset)
+            raw_matches = match_template(scan_area, template, template_path.stem, self.threshold, x_offset, y_offset)
             matches.extend(suppress_nearby_matches(raw_matches, self.min_distance))
         return matches
+
+    def template_names(self) -> list[str]:
+        return [path.stem for path in self._template_paths()]
+
+    def write_debug_overlay(self, screenshot_png: bytes, output_path: Path) -> Path:
+        cv2, _ = load_opencv()
+        screenshot = decode_png(screenshot_png)
+        region = clamp_region(self.scan_region, screenshot)
+        overlay = screenshot.copy()
+        cv2.rectangle(overlay, (region.x, region.y), (region.right, region.bottom), (0, 255, 255), 3)
+        cv2.putText(
+            overlay,
+            f"bag area {region.x},{region.y} {region.width}x{region.height}",
+            (region.x, max(20, region.y - 8)),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.55,
+            (0, 255, 255),
+            2,
+            cv2.LINE_AA,
+        )
+        try:
+            matches = self.find_matches(screenshot)
+        except StoneTemplateUnavailableError:
+            matches = []
+        for match in matches:
+            cv2.rectangle(
+                overlay,
+                (match.x, match.y),
+                (match.x + match.width, match.y + match.height),
+                (0, 220, 0),
+                2,
+            )
+            cv2.putText(
+                overlay,
+                match.template_name,
+                (match.x, max(20, match.y - 4)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.45,
+                (0, 220, 0),
+                1,
+                cv2.LINE_AA,
+            )
+        output_path.parent.mkdir(parents=True, exist_ok=True)
+        cv2.imwrite(str(output_path), overlay)
+        return output_path
 
     def _template_paths(self) -> list[Path]:
         if not self.template_dir.is_dir():
             return []
-        return sorted(
+        paths = sorted(
             path
             for path in self.template_dir.iterdir()
             if path.suffix.lower() in {".png", ".jpg", ".jpeg", ".bmp"}
         )
+        if self.enabled_templates is None:
+            return paths
+        return [path for path in paths if path.stem in self.enabled_templates]
 
 
 def load_opencv() -> tuple[Any, Any]:
@@ -128,10 +204,18 @@ def decode_png(png_bytes: bytes) -> Any:
     return image
 
 
-def bottom_scan_area(image: Any) -> tuple[Any, int]:
-    height = image.shape[0]
-    y_offset = int(height * (1 - BOTTOM_SCAN_RATIO))
-    return image[y_offset:, :], y_offset
+def clamp_region(region: ScanRegion, image: Any) -> ScanRegion:
+    height, width = image.shape[:2]
+    x = max(0, min(region.x, width - 1))
+    y = max(0, min(region.y, height - 1))
+    right = max(x + 1, min(region.right, width))
+    bottom = max(y + 1, min(region.bottom, height))
+    return ScanRegion(x, y, right - x, bottom - y)
+
+
+def scan_area_for_region(image: Any, region: ScanRegion) -> tuple[Any, int, int]:
+    clamped = clamp_region(region, image)
+    return image[clamped.y:clamped.bottom, clamped.x:clamped.right], clamped.x, clamped.y
 
 
 def match_template(
@@ -139,6 +223,7 @@ def match_template(
     template: Any,
     template_name: str,
     threshold: float,
+    x_offset: int,
     y_offset: int,
 ) -> list[TemplateMatch]:
     cv2, np = load_opencv()
@@ -152,7 +237,7 @@ def match_template(
         TemplateMatch(
             template_name=template_name,
             score=float(result[y, x]),
-            x=int(x),
+            x=int(x + x_offset),
             y=int(y + y_offset),
             width=width,
             height=height,

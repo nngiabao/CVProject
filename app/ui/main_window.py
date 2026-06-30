@@ -29,13 +29,20 @@ from PySide6.QtWidgets import (
 
 from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
-from app.features.stone_merge import OpenCvUnavailableError, StoneMergeScanner, StoneTemplateUnavailableError
+from app.features.stone_merge import (
+    OpenCvUnavailableError,
+    StoneMergeScanner,
+    StoneTemplateSelectionError,
+    StoneTemplateUnavailableError,
+)
 from app.models import EmulatorInstance, InstanceState, WireGuardConfig
 from app.wireguard import WireGuardEmulatorManager
 
 
 MAX_STONE_MERGES_PER_RUN = 20
 STONE_MERGE_SETTLE_SECONDS = 0.65
+STONE_TEMPLATE_CHECK_COLUMN = 0
+STONE_TEMPLATE_NAME_COLUMN = 1
 
 
 class BackgroundSignals(QObject):
@@ -49,21 +56,26 @@ class MainWindow(QMainWindow):
         self.provider = provider
         self.wireguard_source_file = Path.cwd() / ".wireguard_source.txt"
         self.wireguard_assignment_file = Path.cwd() / ".wireguard_assignments.json"
+        self.stone_template_settings_file = Path.cwd() / ".stone_templates.json"
         self.instances: list[EmulatorInstance] = []
         self.wireguard_configs: list[WireGuardConfig] = []
         self.bot_manager = BotManager()
         self.wireguard_manager = WireGuardEmulatorManager(Path.cwd())
         self.stone_scanner = StoneMergeScanner(Path.cwd() / "assets" / "templates" / "stones")
+        self.stone_template_enabled: dict[str, bool] = {}
         self.wireguard_summary: Optional[QLabel] = None
         self.bot_heading: Optional[QLabel] = None
         self.bot_metrics: list[QLabel] = []
         self.task_table: Optional[QTableWidget] = None
+        self.stone_template_table: Optional[QTableWidget] = None
         self.background_tasks: list[BackgroundSignals] = []
 
         self.setWindowTitle("GrowStone Bot")
         self.resize(1240, 760)
         self.setMinimumSize(980, 620)
         self._build_ui()
+        self._load_stone_template_settings()
+        self.refresh_stone_templates()
         self.refresh_instances()
         self._load_wireguard_assignments()
         self._render_instances()
@@ -222,6 +234,32 @@ class MainWindow(QMainWindow):
         self.task_table.horizontalHeader().setSectionResizeMode(1, QHeaderView.ResizeToContents)
         self.task_table.horizontalHeader().setSectionResizeMode(2, QHeaderView.ResizeToContents)
         layout.addWidget(self.task_table, 1)
+
+        stone_actions = QHBoxLayout()
+        stone_heading = QLabel("Stone templates")
+        stone_heading.setObjectName("metric")
+        refresh_templates = QPushButton("Refresh")
+        refresh_templates.clicked.connect(self.refresh_stone_templates)
+        preview_area = QPushButton("Preview bag area")
+        preview_area.clicked.connect(self.preview_stone_bag_area)
+        stone_actions.addWidget(stone_heading)
+        stone_actions.addStretch()
+        stone_actions.addWidget(refresh_templates)
+        stone_actions.addWidget(preview_area)
+        layout.addLayout(stone_actions)
+
+        self.stone_template_table = QTableWidget(0, 2)
+        self.stone_template_table.setHorizontalHeaderLabels(["Merge", "Template"])
+        self.stone_template_table.verticalHeader().setVisible(False)
+        self.stone_template_table.setEditTriggers(QAbstractItemView.NoEditTriggers)
+        self.stone_template_table.setSelectionBehavior(QAbstractItemView.SelectRows)
+        self.stone_template_table.setAlternatingRowColors(True)
+        self.stone_template_table.itemChanged.connect(self.update_stone_template_state)
+        self.stone_template_table.horizontalHeader().setSectionResizeMode(STONE_TEMPLATE_CHECK_COLUMN, QHeaderView.ResizeToContents)
+        self.stone_template_table.horizontalHeader().setSectionResizeMode(STONE_TEMPLATE_NAME_COLUMN, QHeaderView.Stretch)
+        self.stone_template_table.setMaximumHeight(160)
+        layout.addWidget(self.stone_template_table)
+
         self.render_selected_instance_tasks()
         return frame
 
@@ -415,6 +453,96 @@ class MainWindow(QMainWindow):
         values = (f"Enabled: {enabled}", f"Idle: {idle}", f"Errors: {errors}")
         for label, value in zip(self.bot_metrics, values):
             label.setText(value)
+
+    def refresh_stone_templates(self) -> None:
+        names = self.stone_scanner.template_names()
+        for name in names:
+            self.stone_template_enabled.setdefault(name, True)
+        self._apply_stone_template_filter()
+        self._render_stone_template_table(names)
+
+    def update_stone_template_state(self, item: QTableWidgetItem) -> None:
+        if item.column() != STONE_TEMPLATE_CHECK_COLUMN:
+            return
+        name_item = self.stone_template_table.item(item.row(), STONE_TEMPLATE_NAME_COLUMN) if self.stone_template_table else None
+        if name_item is None:
+            return
+        self.stone_template_enabled[name_item.text()] = item.checkState() == Qt.Checked
+        self._apply_stone_template_filter()
+        self._save_stone_template_settings()
+
+    def preview_stone_bag_area(self) -> None:
+        instance_index = self._task_panel_instance_index()
+        if instance_index is None:
+            QMessageBox.information(self, "Select instance", "Select one running emulator instance first.")
+            return
+        instance = self._instance_by_index(instance_index)
+        if instance is None or not instance.live_pids():
+            QMessageBox.information(self, "Start LDPlayer first", f"Start instance {instance_index} before previewing.")
+            return
+
+        self.statusBar().showMessage(f"Capturing bag area preview for instance {instance_index}...", 5000)
+
+        def work() -> dict[str, object]:
+            screenshot = self.provider.screenshot_png(instance_index)
+            output_path = (
+                Path.cwd()
+                / "outputs"
+                / "stone-debug"
+                / f"instance-{instance_index}-bag-area-{int(time.time())}.png"
+            )
+            written = self.stone_scanner.write_debug_overlay(screenshot, output_path)
+            return {"path": str(written)}
+
+        self._run_background(work, self._finish_preview_stone_bag_area, "Bag preview failed")
+
+    def _finish_preview_stone_bag_area(self, result: object) -> None:
+        if not isinstance(result, dict) or not result.get("path"):
+            return
+        path = str(result["path"])
+        QMessageBox.information(self, "Bag area preview", f"Saved preview image:\n{path}")
+        self.statusBar().showMessage(f"Saved bag area preview: {path}", 8000)
+
+    def _render_stone_template_table(self, names: list[str]) -> None:
+        if self.stone_template_table is None:
+            return
+        self.stone_template_table.blockSignals(True)
+        self.stone_template_table.setRowCount(len(names))
+        for row, name in enumerate(names):
+            enabled_item = QTableWidgetItem()
+            enabled_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsEnabled | Qt.ItemIsSelectable)
+            enabled_item.setCheckState(Qt.Checked if self.stone_template_enabled.get(name, True) else Qt.Unchecked)
+            name_item = QTableWidgetItem(name)
+            self.stone_template_table.setItem(row, STONE_TEMPLATE_CHECK_COLUMN, enabled_item)
+            self.stone_template_table.setItem(row, STONE_TEMPLATE_NAME_COLUMN, name_item)
+        self.stone_template_table.blockSignals(False)
+
+    def _apply_stone_template_filter(self) -> None:
+        enabled = {name for name, is_enabled in self.stone_template_enabled.items() if is_enabled}
+        self.stone_scanner.set_enabled_templates(enabled)
+
+    def _load_stone_template_settings(self) -> None:
+        try:
+            raw_settings = json.loads(self.stone_template_settings_file.read_text(encoding="utf-8"))
+        except FileNotFoundError:
+            return
+        except (OSError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Stone template settings", f"Could not load saved stone template settings: {exc}")
+            return
+        if not isinstance(raw_settings, dict):
+            return
+        for name, enabled in raw_settings.items():
+            if isinstance(name, str) and isinstance(enabled, bool):
+                self.stone_template_enabled[name] = enabled
+
+    def _save_stone_template_settings(self) -> None:
+        try:
+            self.stone_template_settings_file.write_text(
+                json.dumps(self.stone_template_enabled, indent=2, sort_keys=True),
+                encoding="utf-8",
+            )
+        except OSError as exc:
+            QMessageBox.warning(self, "Stone template settings", f"Could not save stone template settings: {exc}")
 
     def _start_task_after_wireguard_check(self, instance_index: int, task_row: int) -> None:
         instance = self._instance_by_index(instance_index)
@@ -812,6 +940,7 @@ class MainWindow(QMainWindow):
         if task_row >= len(tasks) or tasks[task_row].name != "Merge stones":
             return
 
+        self.refresh_stone_templates()
         task = tasks[task_row]
         task.status = "Scanning"
         self._render_task_table(instance_index)
@@ -834,7 +963,13 @@ class MainWindow(QMainWindow):
                         }
                     )
                     time.sleep(STONE_MERGE_SETTLE_SECONDS)
-            except (OpenCvUnavailableError, StoneTemplateUnavailableError, ValueError, RuntimeError) as exc:
+            except (
+                OpenCvUnavailableError,
+                StoneTemplateSelectionError,
+                StoneTemplateUnavailableError,
+                ValueError,
+                RuntimeError,
+            ) as exc:
                 return {
                     "instance_index": instance_index,
                     "task_row": task_row,

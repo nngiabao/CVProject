@@ -46,10 +46,17 @@ disabled until the selected instance has a WireGuard config assigned.
 
 The first bot feature is template-based stone detection. Put cropped stone
 template images in `assets/templates/stones/`. The scanner captures the emulator
-screen, searches only the bottom third of the 720x1080 screen, and returns drag
-coordinates when it finds two matching stones of the same template. If the
-template folder is empty, the task reports that directly instead of silently
-showing no match.
+screen, searches the configured bag rectangle (`x=27`, `y=438`, `width=516`,
+`height=199`), and returns drag coordinates when it finds two matching stones of
+the same template. If the template folder is empty, the task reports that
+directly instead of silently showing no match.
+
+Use **Preview bag area** to capture the selected emulator screen and write a
+debug image under `outputs/stone-debug/`. The image draws the bag bounding box
+and any detected template matches so the scan area can be checked visually.
+
+The **Stone templates** list controls which stone images are mergeable. New
+templates default to enabled, and unchecked templates are skipped by the scanner.
 
 When the **Merge stones** task is enabled, the app checks the emulator public IP,
 captures the selected instance, and keeps merging visible matching pairs until
