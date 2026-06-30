@@ -30,6 +30,7 @@ from PySide6.QtWidgets import (
 
 from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
+from app.features.stone_merge import StoneMergeScanner
 from app.models import EmulatorInstance, InstanceState, ProxyConfig
 from app.process_utils import ldplayer_related_pids
 from app.proxy_check import check_proxy
@@ -57,6 +58,7 @@ class MainWindow(QMainWindow):
         self.routing = RoutingService()
         self.bot_manager = BotManager(self.routing)
         self.redirect_engine = Tun2SocksEngine(Path.cwd())
+        self.stone_scanner = StoneMergeScanner(Path.cwd() / "assets" / "templates" / "stones")
         self.redirect_engine.cleanup_stale_routes()
         self.windivert_guard = WinDivertGuard()
         self.windivert_status: WinDivertStatus = check_windivert()
@@ -387,6 +389,8 @@ class MainWindow(QMainWindow):
             return
         person.set_task_enabled(item.row(), enabled)
         self._render_task_table(instance_index)
+        if enabled:
+            self._run_enabled_task_once(instance_index, item.row())
 
     def _render_task_table(self, instance_index: Optional[int]) -> None:
         if self.task_table is None:
@@ -498,6 +502,7 @@ class MainWindow(QMainWindow):
         if isinstance(routed_result, dict) and routed_result.get("message"):
             message = str(routed_result["message"])
         self.statusBar().showMessage(message, 5000)
+        self._run_enabled_task_once(instance_index, task_row)
 
     def table_select_all(self) -> None:
         self.table.selectAll()
@@ -1011,6 +1016,61 @@ class MainWindow(QMainWindow):
                 signals.failed.emit(str(exc))
 
         threading.Thread(target=runner, name="ui-background-task", daemon=True).start()
+
+    def _run_enabled_task_once(self, instance_index: int, task_row: int) -> None:
+        person = self.bot_manager.person(instance_index)
+        tasks = person.tasks or []
+        if task_row >= len(tasks) or tasks[task_row].name != "Merge stones":
+            return
+
+        task = tasks[task_row]
+        task.status = "Scanning"
+        self._render_task_table(instance_index)
+        self.statusBar().showMessage(f"Scanning stones for instance {instance_index}...", 5000)
+
+        def work() -> dict[str, object]:
+            screenshot = self.provider.screenshot_png(instance_index)
+            candidate = self.stone_scanner.find_merge_candidate(screenshot)
+            if candidate is None:
+                return {"instance_index": instance_index, "task_row": task_row, "merged": False}
+            self.provider.drag(instance_index, candidate.drag_from, candidate.drag_to)
+            return {
+                "instance_index": instance_index,
+                "task_row": task_row,
+                "merged": True,
+                "template": candidate.template_name,
+                "from": candidate.drag_from,
+                "to": candidate.drag_to,
+            }
+
+        self._run_background(
+            work,
+            self._finish_merge_stones_once,
+            "Merge stones failed",
+        )
+
+    def _finish_merge_stones_once(self, result: object) -> None:
+        if not isinstance(result, dict):
+            self.refresh_instances()
+            return
+        instance_index = int(result["instance_index"])
+        task_row = int(result["task_row"])
+        person = self.bot_manager.person(instance_index)
+        tasks = person.tasks or []
+        if task_row >= len(tasks):
+            return
+        if result.get("merged"):
+            start = result.get("from")
+            end = result.get("to")
+            tasks[task_row].status = "Merged"
+            self.statusBar().showMessage(
+                f"Merged {result.get('template')} on instance {instance_index}: {start} -> {end}",
+                5000,
+            )
+        else:
+            tasks[task_row].status = "No match"
+            self.statusBar().showMessage(f"No matching stones found on instance {instance_index}", 5000)
+        self._render_task_table(instance_index)
 
     def _apply_saved_proxy_routing_blocking(self, instance_index: int) -> Optional[dict[str, str]]:
         person = self.bot_manager.person(instance_index)

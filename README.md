@@ -79,5 +79,5 @@ template images in `assets/templates/stones/`. The scanner captures the emulator
 screen, searches only the bottom third of the 720x1080 screen, and returns drag
 coordinates when it finds two matching stones of the same template.
 
-This first version detects the merge candidate; the next step is executing the
-drag through ADB input once the real stone template image is available.
+When the **Merge stones** task is enabled, the app captures the selected
+instance, finds a merge candidate, and executes the drag through ADB input.

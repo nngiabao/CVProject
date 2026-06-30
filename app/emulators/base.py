@@ -42,3 +42,6 @@ class EmulatorProvider(ABC):
 
     def screenshot_png(self, index: int) -> bytes:
         raise NotImplementedError("Screenshot capture is not supported by this emulator provider")
+
+    def drag(self, index: int, start: tuple[int, int], end: tuple[int, int], duration_ms: int = 350) -> None:
+        raise NotImplementedError("Touch drag is not supported by this emulator provider")

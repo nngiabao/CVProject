@@ -432,6 +432,14 @@ class LdPlayerProvider(EmulatorProvider):
         self._wait_for_adb(index, timeout=10)
         return self._run_bytes("adb", "--index", str(index), "--command", "exec-out screencap -p")
 
+    def drag(self, index: int, start: tuple[int, int], end: tuple[int, int], duration_ms: int = 350) -> None:
+        self._wait_for_adb(index, timeout=10)
+        duration = max(50, int(duration_ms))
+        self._adb(
+            index,
+            f"shell input swipe {start[0]} {start[1]} {end[0]} {end[1]} {duration}",
+        )
+
     def _wait_for_adb(self, index: int, timeout: int = 20) -> None:
         deadline = time.monotonic() + timeout
         last_error = "device not ready"

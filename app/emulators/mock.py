@@ -66,5 +66,8 @@ class MockEmulatorProvider(EmulatorProvider):
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAGjChXjAAAAAElFTkSuQmCC"
         )
 
+    def drag(self, index: int, start: tuple[int, int], end: tuple[int, int], duration_ms: int = 350) -> None:
+        self._find(index)
+
     def _find(self, index: int) -> EmulatorInstance:
         return next(item for item in self._instances if item.index == index)
