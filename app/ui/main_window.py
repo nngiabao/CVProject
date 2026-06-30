@@ -472,6 +472,13 @@ class MainWindow(QMainWindow):
         rows = sorted({index.row() for index in self.table.selectionModel().selectedRows()})
         return [self.instances[row].index for row in rows]
 
+    def assigned_wireguard_indexes(self) -> list[int]:
+        return [
+            instance.index
+            for instance in self.instances
+            if self.bot_manager.person(instance.index).wireguard_config is not None
+        ]
+
     def assign_wireguard_config(self) -> None:
         indexes = self.selected_indexes()
         if not indexes:
@@ -492,9 +499,14 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage(f"Assigned {config.display} to {len(indexes)} instance(s)", 5000)
 
     def install_or_import_wireguard(self) -> None:
-        indexes = self.selected_indexes()
+        selected_indexes = self.selected_indexes()
+        indexes = selected_indexes or self.assigned_wireguard_indexes()
         if not indexes:
-            QMessageBox.information(self, "Select instances", "Select one or more emulator instances.")
+            QMessageBox.information(
+                self,
+                "Assign config first",
+                "Assign a WireGuard .conf to at least one emulator before installing/importing.",
+            )
             return
 
         missing = [index for index in indexes if self.bot_manager.person(index).wireguard_config is None]
@@ -502,11 +514,12 @@ class MainWindow(QMainWindow):
             QMessageBox.information(
                 self,
                 "Assign config first",
-                "Assign a WireGuard .conf before installing/importing it.",
+                "Some selected emulator(s) do not have a WireGuard .conf assigned.",
             )
             return
 
-        self.statusBar().showMessage("Installing/importing WireGuard config...", 5000)
+        scope = "selected emulator(s)" if selected_indexes else "assigned emulator(s)"
+        self.statusBar().showMessage(f"Installing/importing WireGuard config for {scope}...", 5000)
 
         def work() -> dict[str, object]:
             results: list[str] = []
