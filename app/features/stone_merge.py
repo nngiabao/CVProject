@@ -1,16 +1,24 @@
 from __future__ import annotations
 
-from typing import Optional
+from typing import Any, Optional
 from dataclasses import dataclass
 from pathlib import Path
-
-import cv2
-import numpy as np
 
 
 BOTTOM_SCAN_RATIO = 1 / 3
 DEFAULT_MATCH_THRESHOLD = 0.88
 DEFAULT_MIN_DISTANCE = 24
+OPENCV_INSTALL_HINT = (
+    "OpenCV is required for Merge stones. Install the project requirements with "
+    "the supported Python runtime, or run: python -m pip install opencv-python==4.7.0.72 numpy==1.23.5"
+)
+
+_cv2: Any = None
+_np: Any = None
+
+
+class OpenCvUnavailableError(RuntimeError):
+    pass
 
 
 @dataclass(frozen=True)
@@ -66,7 +74,8 @@ class StoneMergeScanner:
                 return MergeCandidate(ordered[0].template_name, ordered[0], ordered[1])
         return None
 
-    def find_matches(self, screenshot: np.ndarray) -> list[TemplateMatch]:
+    def find_matches(self, screenshot: Any) -> list[TemplateMatch]:
+        cv2, _ = load_opencv()
         scan_area, y_offset = bottom_scan_area(screenshot)
         matches: list[TemplateMatch] = []
         for template_path in self._template_paths():
@@ -87,26 +96,42 @@ class StoneMergeScanner:
         )
 
 
-def decode_png(png_bytes: bytes) -> np.ndarray:
+def load_opencv() -> tuple[Any, Any]:
+    global _cv2, _np
+    if _cv2 is not None and _np is not None:
+        return _cv2, _np
+    try:
+        import cv2
+        import numpy as np
+    except ImportError as exc:
+        raise OpenCvUnavailableError(OPENCV_INSTALL_HINT) from exc
+    _cv2 = cv2
+    _np = np
+    return _cv2, _np
+
+
+def decode_png(png_bytes: bytes) -> Any:
+    cv2, np = load_opencv()
     image = cv2.imdecode(np.frombuffer(png_bytes, dtype=np.uint8), cv2.IMREAD_COLOR)
     if image is None:
         raise ValueError("Could not decode screenshot PNG")
     return image
 
 
-def bottom_scan_area(image: np.ndarray) -> tuple[np.ndarray, int]:
+def bottom_scan_area(image: Any) -> tuple[Any, int]:
     height = image.shape[0]
     y_offset = int(height * (1 - BOTTOM_SCAN_RATIO))
     return image[y_offset:, :], y_offset
 
 
 def match_template(
-    scan_area: np.ndarray,
-    template: np.ndarray,
+    scan_area: Any,
+    template: Any,
     template_name: str,
     threshold: float,
     y_offset: int,
 ) -> list[TemplateMatch]:
+    cv2, np = load_opencv()
     if template.shape[0] > scan_area.shape[0] or template.shape[1] > scan_area.shape[1]:
         return []
 
@@ -136,4 +161,5 @@ def suppress_nearby_matches(matches: list[TemplateMatch], min_distance: int) -> 
 
 
 def distance(first: tuple[int, int], second: tuple[int, int]) -> float:
+    _, np = load_opencv()
     return float(np.hypot(first[0] - second[0], first[1] - second[1]))
