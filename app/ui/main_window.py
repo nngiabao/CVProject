@@ -29,19 +29,14 @@ from PySide6.QtWidgets import (
 
 from app.bot import BotManager
 from app.emulators.base import EmulatorProvider
-from app.features.stone_merge import (
-    OpenCvUnavailableError,
-    StoneMergeScanner,
-    StoneTemplateSelectionError,
-    StoneTemplateUnavailableError,
-)
+from app.features.stone_merge import StoneMergeScanner
 from app.models import EmulatorInstance, InstanceState, WireGuardConfig
 from app.paths import APP_ROOT, OUTPUT_DIR, STONE_TEMPLATE_DIR
 from app.wireguard import WireGuardEmulatorManager
 
 
-MAX_STONE_MERGES_PER_RUN = 20
-STONE_MERGE_SETTLE_SECONDS = 13.0
+STONE_MERGE_INTERVAL_SECONDS = 13.0
+STONE_MERGE_SETTLE_SECONDS = 0.65
 STONE_TEMPLATE_CHECK_COLUMN = 0
 STONE_TEMPLATE_NAME_COLUMN = 1
 
@@ -71,6 +66,8 @@ class MainWindow(QMainWindow):
         self.task_table: Optional[QTableWidget] = None
         self.stone_template_table: Optional[QTableWidget] = None
         self.background_tasks: list[BackgroundSignals] = []
+        self.running_task_ticks: set[tuple[int, int]] = set()
+        self.scheduled_task_ticks: set[tuple[int, int]] = set()
 
         self.setWindowTitle("GrowStone Bot")
         self.resize(1240, 760)
@@ -956,9 +953,14 @@ class MainWindow(QMainWindow):
         threading.Thread(target=runner, name="ui-background-task", daemon=True).start()
 
     def _run_enabled_task_once(self, instance_index: int, task_row: int) -> None:
+        tick_key = (instance_index, task_row)
+        if tick_key in self.running_task_ticks:
+            return
         person = self.bot_manager.person(instance_index)
         tasks = person.tasks or []
         if task_row >= len(tasks) or tasks[task_row].name != "Merge stones":
+            return
+        if not tasks[task_row].enabled:
             return
 
         self.refresh_stone_templates()
@@ -966,45 +968,38 @@ class MainWindow(QMainWindow):
         task.status = "Scanning"
         self._render_task_table(instance_index)
         self.statusBar().showMessage(f"Scanning stones for instance {instance_index}...", 5000)
+        self.running_task_ticks.add(tick_key)
 
         def work() -> dict[str, object]:
-            merges: list[dict[str, object]] = []
             try:
-                for _ in range(MAX_STONE_MERGES_PER_RUN):
-                    screenshot = self.provider.screenshot_png(instance_index)
-                    candidate = self.stone_scanner.find_merge_candidate(screenshot)
-                    if candidate is None:
-                        break
-                    self.provider.drag(instance_index, candidate.drag_from, candidate.drag_to)
-                    merges.append(
-                        {
-                            "template": candidate.template_name,
-                            "from": candidate.drag_from,
-                            "to": candidate.drag_to,
-                        }
-                    )
+                screenshot = self.provider.screenshot_png(instance_index)
+                candidate = self.stone_scanner.find_merge_candidate(screenshot)
+                if candidate is None:
+                    return {
+                        "instance_index": instance_index,
+                        "task_row": task_row,
+                        "merged": False,
+                    }
+                self.provider.drag(instance_index, candidate.drag_from, candidate.drag_to)
+                merge = {
+                    "template": candidate.template_name,
+                    "from": candidate.drag_from,
+                    "to": candidate.drag_to,
+                }
+                if STONE_MERGE_SETTLE_SECONDS > 0:
                     time.sleep(STONE_MERGE_SETTLE_SECONDS)
-            except (
-                OpenCvUnavailableError,
-                StoneTemplateSelectionError,
-                StoneTemplateUnavailableError,
-                ValueError,
-                RuntimeError,
-            ) as exc:
+                return {
+                    "instance_index": instance_index,
+                    "task_row": task_row,
+                    "merged": True,
+                    "merge": merge,
+                }
+            except Exception as exc:
                 return {
                     "instance_index": instance_index,
                     "task_row": task_row,
                     "error": str(exc),
-                    "merged_count": len(merges),
                 }
-
-            return {
-                "instance_index": instance_index,
-                "task_row": task_row,
-                "merged_count": len(merges),
-                "merges": merges,
-                "hit_limit": len(merges) >= MAX_STONE_MERGES_PER_RUN,
-            }
 
         self._run_background(
             work,
@@ -1023,26 +1018,42 @@ class MainWindow(QMainWindow):
         if task_row >= len(tasks):
             return
         error = result.get("error")
-        merged_count = int(result.get("merged_count", 0))
+        self.running_task_ticks.discard((instance_index, task_row))
         if error:
             tasks[task_row].status = "Error"
             QMessageBox.warning(self, "Merge stones", str(error))
             self.statusBar().showMessage(f"Merge stones failed on instance {instance_index}", 5000)
-        elif merged_count:
-            merges = result.get("merges")
-            last_merge = merges[-1] if isinstance(merges, list) and merges else {}
-            start = last_merge.get("from") if isinstance(last_merge, dict) else None
-            end = last_merge.get("to") if isinstance(last_merge, dict) else None
-            tasks[task_row].status = f"Merged {merged_count}"
-            limit_note = " (limit reached)" if result.get("hit_limit") else ""
+        elif result.get("merged"):
+            merge = result.get("merge")
+            start = merge.get("from") if isinstance(merge, dict) else None
+            end = merge.get("to") if isinstance(merge, dict) else None
+            tasks[task_row].status = "Merged 1"
             self.statusBar().showMessage(
-                f"Merged {merged_count} pair(s) on instance {instance_index}: {start} -> {end}{limit_note}",
+                f"Merged one pair on instance {instance_index}: {start} -> {end}",
                 5000,
             )
         else:
-            tasks[task_row].status = "No match"
+            tasks[task_row].status = "Waiting"
             self.statusBar().showMessage(f"No matching stones found on instance {instance_index}", 5000)
         self._render_task_table(instance_index)
+        if not error and tasks[task_row].enabled:
+            self._schedule_enabled_task_tick(instance_index, task_row)
+
+    def _schedule_enabled_task_tick(self, instance_index: int, task_row: int) -> None:
+        tick_key = (instance_index, task_row)
+        if tick_key in self.running_task_ticks or tick_key in self.scheduled_task_ticks:
+            return
+        self.scheduled_task_ticks.add(tick_key)
+
+        def run_tick() -> None:
+            self.scheduled_task_ticks.discard(tick_key)
+            person = self.bot_manager.person(instance_index)
+            tasks = person.tasks or []
+            if task_row >= len(tasks) or not tasks[task_row].enabled:
+                return
+            self._run_enabled_task_once(instance_index, task_row)
+
+        QTimer.singleShot(int(STONE_MERGE_INTERVAL_SECONDS * 1000), run_tick)
 
     def _apply_saved_wireguard_check_blocking(self, instance_index: int) -> Optional[dict[str, str]]:
         person = self.bot_manager.person(instance_index)
