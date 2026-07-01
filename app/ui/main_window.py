@@ -38,7 +38,7 @@ from app.wireguard import WireGuardEmulatorManager
 
 STONE_MERGE_INTERVAL_SECONDS = 13.0
 STONE_MERGE_SETTLE_SECONDS = 0.65
-STONE_MERGE_DRAG_DURATION_MS = (13, 25)
+STONE_MERGE_DRAG_DURATION_MS = (50, 100)
 STONE_TEMPLATE_CHECK_COLUMN = 0
 STONE_TEMPLATE_NAME_COLUMN = 1
 
@@ -391,18 +391,6 @@ class MainWindow(QMainWindow):
             return
         enabled = item.checkState() == Qt.Checked
         person = self.bot_manager.person(instance_index)
-        if enabled and person.wireguard_config is None:
-            QMessageBox.information(
-                self,
-                "Assign WireGuard first",
-                f"Assign a WireGuard .conf to instance {instance_index} before enabling bot tasks.",
-            )
-            self._render_task_table(instance_index)
-            return
-        if enabled and (person.wireguard_check is None or person.wireguard_check[0] != "IP OK"):
-            self._start_task_after_wireguard_check(instance_index, item.row())
-            self._render_task_table(instance_index)
-            return
         person.set_task_enabled(item.row(), enabled)
         self._render_task_table(instance_index)
         if enabled:
@@ -432,10 +420,7 @@ class MainWindow(QMainWindow):
         for row, task in enumerate(tasks):
             task_item = QTableWidgetItem(task.name)
             enabled_item = QTableWidgetItem()
-            flags = Qt.ItemIsUserCheckable | Qt.ItemIsSelectable
-            if person.wireguard_config is not None:
-                flags |= Qt.ItemIsEnabled
-            enabled_item.setFlags(flags)
+            enabled_item.setFlags(Qt.ItemIsUserCheckable | Qt.ItemIsSelectable | Qt.ItemIsEnabled)
             enabled_item.setCheckState(Qt.Checked if task.enabled else Qt.Unchecked)
             status_item = QTableWidgetItem("On" if task.enabled else "Off")
             status_item.setForeground(QColor("#198754" if task.enabled else "#69758a"))
