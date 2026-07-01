@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 DEFAULT_BAG_REGION = (27, 438, 516, 199)
+DEFAULT_SLOT_REGION = (36, 449, 507, 171)
 DEFAULT_MATCH_THRESHOLD = 0.88
 DEFAULT_SLOT_MATCH_THRESHOLD = 0.83
 DEFAULT_SLOT_CONFIDENCE_GAP = 0.04
@@ -121,6 +122,7 @@ class StoneMergeScanner:
         threshold: float = DEFAULT_MATCH_THRESHOLD,
         min_distance: int = DEFAULT_MIN_DISTANCE,
         scan_region: ScanRegion = ScanRegion(*DEFAULT_BAG_REGION),
+        slot_region: ScanRegion = ScanRegion(*DEFAULT_SLOT_REGION),
         slot_rows: int = DEFAULT_SLOT_ROWS,
         slot_columns: int = DEFAULT_SLOT_COLUMNS,
         slot_threshold: float = DEFAULT_SLOT_MATCH_THRESHOLD,
@@ -130,6 +132,7 @@ class StoneMergeScanner:
         self.threshold = threshold
         self.min_distance = min_distance
         self.scan_region = scan_region
+        self.slot_region = slot_region
         self.slot_rows = slot_rows
         self.slot_columns = slot_columns
         self.slot_threshold = slot_threshold
@@ -172,7 +175,7 @@ class StoneMergeScanner:
             if template is not None:
                 templates.append((template_path.stem, template, mask))
 
-        slots = slot_regions_for_region(clamp_region(self.scan_region, screenshot), self.slot_rows, self.slot_columns)
+        slots = slot_regions_for_region(clamp_region(self.slot_region, screenshot), self.slot_rows, self.slot_columns)
         detections: list[SlotDetection] = []
         for row, column, slot in slots:
             slot_image = screenshot[slot.y:slot.bottom, slot.x:slot.right]
@@ -237,9 +240,17 @@ class StoneMergeScanner:
         region = clamp_region(self.scan_region, screenshot)
         overlay = screenshot.copy()
         cv2.rectangle(overlay, (region.x, region.y), (region.right, region.bottom), (0, 255, 255), 3)
+        slot_region = clamp_region(self.slot_region, screenshot)
+        cv2.rectangle(
+            overlay,
+            (slot_region.x, slot_region.y),
+            (slot_region.right, slot_region.bottom),
+            (0, 120, 255),
+            2,
+        )
         cv2.putText(
             overlay,
-            f"bag area {region.x},{region.y} {region.width}x{region.height}",
+            f"bag {region.x},{region.y} {region.width}x{region.height} | slots {slot_region.x},{slot_region.y} {slot_region.width}x{slot_region.height}",
             (region.x, max(20, region.y - 8)),
             cv2.FONT_HERSHEY_SIMPLEX,
             0.55,
