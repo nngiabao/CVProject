@@ -8,7 +8,7 @@ from pathlib import Path
 
 DEFAULT_BAG_REGION = (27, 438, 516, 199)
 DEFAULT_FIRST_SLOT = (41, 448, 59, 55)
-DEFAULT_SLOT_STEP = (62, 64)
+DEFAULT_SLOT_STEP = (64, 64)
 DEFAULT_MATCH_THRESHOLD = 0.88
 DEFAULT_SLOT_MATCH_THRESHOLD = 0.83
 DEFAULT_SLOT_CONFIDENCE_GAP = 0.04
@@ -158,8 +158,8 @@ class StoneMergeScanner:
 
         for template_matches in by_template.values():
             if len(template_matches) >= 2:
-                ordered = sorted(template_matches, key=lambda item: item.score, reverse=True)
-                return MergeCandidate(ordered[0].template_name, ordered[0], ordered[1])
+                first, second = closest_pair(template_matches)
+                return MergeCandidate(first.template_name, first, second)
         return None
 
     def classify_slots(self, screenshot: Any) -> list[SlotDetection]:
@@ -496,3 +496,20 @@ def suppress_nearby_matches(matches: list[TemplateMatch], min_distance: int) -> 
 def distance(first: tuple[int, int], second: tuple[int, int]) -> float:
     _, np = load_opencv()
     return float(np.hypot(first[0] - second[0], first[1] - second[1]))
+
+
+def closest_pair(matches: list[TemplateMatch]) -> tuple[TemplateMatch, TemplateMatch]:
+    best_pair = (matches[0], matches[1])
+    best_distance = distance(matches[0].center, matches[1].center)
+    best_score = matches[0].score + matches[1].score
+    for index, first in enumerate(matches):
+        for second in matches[index + 1:]:
+            pair_distance = distance(first.center, second.center)
+            pair_score = first.score + second.score
+            if pair_distance < best_distance or (
+                pair_distance == best_distance and pair_score > best_score
+            ):
+                best_pair = (first, second)
+                best_distance = pair_distance
+                best_score = pair_score
+    return best_pair
