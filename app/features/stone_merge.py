@@ -8,7 +8,7 @@ from pathlib import Path
 
 DEFAULT_BAG_REGION = (27, 438, 516, 199)
 DEFAULT_FIRST_SLOT = (41, 448, 59, 55)
-DEFAULT_SLOT_STEP = (64, 64)
+DEFAULT_SLOT_STEP = (63, 64)
 DEFAULT_MATCH_THRESHOLD = 0.88
 DEFAULT_SLOT_MATCH_THRESHOLD = 0.83
 DEFAULT_SLOT_CONFIDENCE_GAP = 0.04
@@ -146,6 +146,10 @@ class StoneMergeScanner:
         self.enabled_templates = names
 
     def find_merge_candidate(self, screenshot_png: bytes) -> Optional[MergeCandidate]:
+        candidates = self.find_merge_candidates(screenshot_png)
+        return candidates[0] if candidates else None
+
+    def find_merge_candidates(self, screenshot_png: bytes) -> list[MergeCandidate]:
         screenshot = decode_png(screenshot_png)
         matches = [
             slot_detection_to_match(slot)
@@ -156,11 +160,10 @@ class StoneMergeScanner:
         for match in matches:
             by_template.setdefault(match.template_name, []).append(match)
 
+        candidates: list[MergeCandidate] = []
         for template_matches in by_template.values():
-            if len(template_matches) >= 2:
-                first, second = closest_pair(template_matches)
-                return MergeCandidate(first.template_name, first, second)
-        return None
+            candidates.extend(non_overlapping_pairs(template_matches))
+        return sorted(candidates, key=lambda candidate: distance(candidate.drag_from, candidate.drag_to))
 
     def classify_slots(self, screenshot: Any) -> list[SlotDetection]:
         template_paths = self._template_paths()
@@ -513,3 +516,13 @@ def closest_pair(matches: list[TemplateMatch]) -> tuple[TemplateMatch, TemplateM
                 best_distance = pair_distance
                 best_score = pair_score
     return best_pair
+
+
+def non_overlapping_pairs(matches: list[TemplateMatch]) -> list[MergeCandidate]:
+    remaining = list(matches)
+    candidates: list[MergeCandidate] = []
+    while len(remaining) >= 2:
+        first, second = closest_pair(remaining)
+        candidates.append(MergeCandidate(first.template_name, first, second))
+        remaining = [match for match in remaining if match not in {first, second}]
+    return candidates
