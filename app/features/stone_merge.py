@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import sys
 from typing import Any, Optional
 from dataclasses import dataclass
 from pathlib import Path
@@ -10,7 +11,7 @@ DEFAULT_MATCH_THRESHOLD = 0.88
 DEFAULT_MIN_DISTANCE = 24
 OPENCV_INSTALL_HINT = (
     "OpenCV is required for Merge stones. Install the project requirements with "
-    "the supported Python runtime, or run: python -m pip install opencv-python==4.7.0.72 numpy==1.23.5"
+    "the Python runtime that starts this app."
 )
 
 _cv2: Any = None
@@ -190,7 +191,12 @@ def load_opencv() -> tuple[Any, Any]:
         import cv2
         import numpy as np
     except ImportError as exc:
-        raise OpenCvUnavailableError(OPENCV_INSTALL_HINT) from exc
+        raise OpenCvUnavailableError(
+            f"{OPENCV_INSTALL_HINT}\n\n"
+            f"Python used by app:\n{sys.executable}\n\n"
+            "Install with:\n"
+            f"\"{sys.executable}\" -m pip install opencv-python==4.7.0.72 numpy==1.23.5"
+        ) from exc
     _cv2 = cv2
     _np = np
     return _cv2, _np
