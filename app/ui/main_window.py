@@ -36,6 +36,7 @@ from app.features.stone_merge import (
     StoneTemplateUnavailableError,
 )
 from app.models import EmulatorInstance, InstanceState, WireGuardConfig
+from app.paths import APP_ROOT, OUTPUT_DIR, STONE_TEMPLATE_DIR
 from app.wireguard import WireGuardEmulatorManager
 
 
@@ -54,14 +55,15 @@ class MainWindow(QMainWindow):
     def __init__(self, provider: EmulatorProvider) -> None:
         super().__init__()
         self.provider = provider
-        self.wireguard_source_file = Path.cwd() / ".wireguard_source.txt"
-        self.wireguard_assignment_file = Path.cwd() / ".wireguard_assignments.json"
-        self.stone_template_settings_file = Path.cwd() / ".stone_templates.json"
+        self.app_root = APP_ROOT
+        self.wireguard_source_file = self.app_root / ".wireguard_source.txt"
+        self.wireguard_assignment_file = self.app_root / ".wireguard_assignments.json"
+        self.stone_template_settings_file = self.app_root / ".stone_templates.json"
         self.instances: list[EmulatorInstance] = []
         self.wireguard_configs: list[WireGuardConfig] = []
         self.bot_manager = BotManager()
-        self.wireguard_manager = WireGuardEmulatorManager(Path.cwd())
-        self.stone_scanner = StoneMergeScanner(Path.cwd() / "assets" / "templates" / "stones")
+        self.wireguard_manager = WireGuardEmulatorManager(self.app_root)
+        self.stone_scanner = StoneMergeScanner(STONE_TEMPLATE_DIR)
         self.stone_template_enabled: dict[str, bool] = {}
         self.wireguard_summary: Optional[QLabel] = None
         self.bot_heading: Optional[QLabel] = None
@@ -486,13 +488,16 @@ class MainWindow(QMainWindow):
         def work() -> dict[str, object]:
             screenshot = self.provider.screenshot_png(instance_index)
             output_path = (
-                Path.cwd()
-                / "outputs"
+                OUTPUT_DIR
                 / "stone-debug"
                 / f"instance-{instance_index}-bag-area-{int(time.time())}.png"
             )
-            written = self.stone_scanner.write_debug_overlay(screenshot, output_path)
-            return {"path": str(written)}
+            preview = self.stone_scanner.write_debug_overlay(screenshot, output_path)
+            return {
+                "path": str(preview.path),
+                "match_count": preview.match_count,
+                "template_count": preview.template_count,
+            }
 
         self._run_background(work, self._finish_preview_stone_bag_area, "Bag preview failed")
 
@@ -500,8 +505,17 @@ class MainWindow(QMainWindow):
         if not isinstance(result, dict) or not result.get("path"):
             return
         path = str(result["path"])
-        QMessageBox.information(self, "Bag area preview", f"Saved preview image:\n{path}")
-        self.statusBar().showMessage(f"Saved bag area preview: {path}", 8000)
+        match_count = int(result.get("match_count", 0))
+        template_count = int(result.get("template_count", 0))
+        QMessageBox.information(
+            self,
+            "Bag area preview",
+            f"Saved preview image:\n{path}\n\nMatched stones: {match_count}\nTemplates loaded: {template_count}",
+        )
+        self.statusBar().showMessage(
+            f"Saved bag preview: {match_count} match(es), {template_count} template(s)",
+            8000,
+        )
 
     def _render_stone_template_table(self, names: list[str]) -> None:
         if self.stone_template_table is None:
@@ -765,7 +779,7 @@ class MainWindow(QMainWindow):
         return Path(file_name) if file_name else None
 
     def _default_wireguard_dir(self) -> Path:
-        work_dir = Path.cwd().parent / "work"
+        work_dir = self.app_root.parent / "work"
         if work_dir.is_dir():
             return work_dir
         downloads = Path.home() / "Downloads"

@@ -6,9 +6,7 @@ from pathlib import Path
 
 from app.emulators.base import EmulatorProvider
 from app.features.stone_merge import MergeCandidate, StoneMergeScanner
-
-
-STONE_TEMPLATE_DIR = Path("assets/templates/stones")
+from app.paths import STONE_TEMPLATE_DIR
 
 
 @dataclass(frozen=True)

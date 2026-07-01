@@ -75,6 +75,13 @@ class MergeCandidate:
         return self.second.center
 
 
+@dataclass(frozen=True)
+class DebugOverlayResult:
+    path: Path
+    match_count: int
+    template_count: int
+
+
 class StoneMergeScanner:
     def __init__(
         self,
@@ -106,7 +113,6 @@ class StoneMergeScanner:
         return None
 
     def find_matches(self, screenshot: Any) -> list[TemplateMatch]:
-        cv2, _ = load_opencv()
         template_paths = self._template_paths()
         if not template_paths:
             if self.enabled_templates is not None and not self.enabled_templates:
@@ -118,17 +124,17 @@ class StoneMergeScanner:
         scan_area, x_offset, y_offset = scan_area_for_region(screenshot, self.scan_region)
         matches: list[TemplateMatch] = []
         for template_path in template_paths:
-            template = cv2.imread(str(template_path), cv2.IMREAD_COLOR)
+            template, mask = load_template_image(template_path)
             if template is None:
                 continue
-            raw_matches = match_template(scan_area, template, template_path.stem, self.threshold, x_offset, y_offset)
+            raw_matches = match_template(scan_area, template, mask, template_path.stem, self.threshold, x_offset, y_offset)
             matches.extend(suppress_nearby_matches(raw_matches, self.min_distance))
         return matches
 
     def template_names(self) -> list[str]:
         return [path.stem for path in self._template_paths()]
 
-    def write_debug_overlay(self, screenshot_png: bytes, output_path: Path) -> Path:
+    def write_debug_overlay(self, screenshot_png: bytes, output_path: Path) -> DebugOverlayResult:
         cv2, _ = load_opencv()
         screenshot = decode_png(screenshot_png)
         region = clamp_region(self.scan_region, screenshot)
@@ -168,7 +174,7 @@ class StoneMergeScanner:
             )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_path), overlay)
-        return output_path
+        return DebugOverlayResult(output_path, len(matches), len(self._template_paths()))
 
     def _template_paths(self) -> list[Path]:
         if not self.template_dir.is_dir():
@@ -210,6 +216,27 @@ def decode_png(png_bytes: bytes) -> Any:
     return image
 
 
+def load_template_image(template_path: Path) -> tuple[Any, Any]:
+    cv2, np = load_opencv()
+    image = cv2.imread(str(template_path), cv2.IMREAD_UNCHANGED)
+    if image is None:
+        return None, None
+    if len(image.shape) < 3 or image.shape[2] < 4:
+        return image, None
+
+    alpha = image[:, :, 3]
+    visible = np.where(alpha > 0)
+    if visible[0].size == 0 or visible[1].size == 0:
+        return None, None
+
+    top = int(visible[0].min())
+    bottom = int(visible[0].max()) + 1
+    left = int(visible[1].min())
+    right = int(visible[1].max()) + 1
+    cropped = image[top:bottom, left:right]
+    return cropped[:, :, :3], cropped[:, :, 3]
+
+
 def clamp_region(region: ScanRegion, image: Any) -> ScanRegion:
     height, width = image.shape[:2]
     x = max(0, min(region.x, width - 1))
@@ -227,6 +254,7 @@ def scan_area_for_region(image: Any, region: ScanRegion) -> tuple[Any, int, int]
 def match_template(
     scan_area: Any,
     template: Any,
+    mask: Any,
     template_name: str,
     threshold: float,
     x_offset: int,
@@ -236,7 +264,11 @@ def match_template(
     if template.shape[0] > scan_area.shape[0] or template.shape[1] > scan_area.shape[1]:
         return []
 
-    result = cv2.matchTemplate(scan_area, template, cv2.TM_CCOEFF_NORMED)
+    if mask is not None:
+        result = cv2.matchTemplate(scan_area, template, cv2.TM_CCORR_NORMED, mask=mask)
+        result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+    else:
+        result = cv2.matchTemplate(scan_area, template, cv2.TM_CCOEFF_NORMED)
     y_positions, x_positions = np.where(result >= threshold)
     height, width = template.shape[:2]
     matches = [
