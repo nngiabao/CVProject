@@ -150,12 +150,18 @@ class StoneMergeScanner:
         return candidates[0] if candidates else None
 
     def find_merge_candidates(self, screenshot_png: bytes) -> list[MergeCandidate]:
+        matches = self.find_confident_matches(screenshot_png)
+        return self.merge_candidates_for_matches(matches)
+
+    def find_confident_matches(self, screenshot_png: bytes) -> list[TemplateMatch]:
         screenshot = decode_png(screenshot_png)
-        matches = [
+        return [
             slot_detection_to_match(slot)
             for slot in self.classify_slots(screenshot)
             if slot.confident and slot.template_name is not None
         ]
+
+    def merge_candidates_for_matches(self, matches: list[TemplateMatch]) -> list[MergeCandidate]:
         by_template: dict[str, list[TemplateMatch]] = {}
         for match in matches:
             by_template.setdefault(match.template_name, []).append(match)

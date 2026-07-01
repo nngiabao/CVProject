@@ -392,6 +392,7 @@ class MainWindow(QMainWindow):
         enabled = item.checkState() == Qt.Checked
         person = self.bot_manager.person(instance_index)
         person.set_task_enabled(item.row(), enabled)
+        self._append_merge_log(instance_index, f"task row {item.row()} {'enabled' if enabled else 'disabled'}")
         self._render_task_table(instance_index)
         if enabled:
             self._run_enabled_task_once(instance_index, item.row())
@@ -942,12 +943,15 @@ class MainWindow(QMainWindow):
     def _run_enabled_task_once(self, instance_index: int, task_row: int) -> None:
         tick_key = (instance_index, task_row)
         if tick_key in self.running_task_ticks:
+            self._append_merge_log(instance_index, f"task row {task_row} skipped: already running")
             return
         person = self.bot_manager.person(instance_index)
         tasks = person.tasks or []
         if task_row >= len(tasks) or tasks[task_row].name != "Merge stones":
+            self._append_merge_log(instance_index, f"task row {task_row} skipped: not merge task")
             return
         if not tasks[task_row].enabled:
+            self._append_merge_log(instance_index, f"task row {task_row} skipped: disabled")
             return
 
         self.refresh_stone_templates()
@@ -958,8 +962,15 @@ class MainWindow(QMainWindow):
             try:
                 self._append_merge_log(instance_index, "tick started")
                 screenshot = self.provider.screenshot_png(instance_index)
-                candidates = self.stone_scanner.find_merge_candidates(screenshot)
-                self._append_merge_log(instance_index, f"found {len(candidates)} merge candidate(s)")
+                matches = self.stone_scanner.find_confident_matches(screenshot)
+                counts: dict[str, int] = {}
+                for match in matches:
+                    counts[match.template_name] = counts.get(match.template_name, 0) + 1
+                candidates = self.stone_scanner.merge_candidates_for_matches(matches)
+                self._append_merge_log(
+                    instance_index,
+                    f"confident matches {len(matches)} [{_format_counts(counts)}], candidates {len(candidates)}",
+                )
                 if not candidates:
                     return {
                         "instance_index": instance_index,
@@ -1084,3 +1095,9 @@ def _friendly_error_message(message: str) -> str:
     if "\ufffdPNG" in message or "%PNG" in message or len(message) > 1200:
         return "The emulator returned screenshot data as an error. Try the action again after ADB reconnects."
     return message
+
+
+def _format_counts(counts: dict[str, int]) -> str:
+    if not counts:
+        return "none"
+    return ", ".join(f"{name}={count}" for name, count in sorted(counts.items()))
