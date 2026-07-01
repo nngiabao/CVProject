@@ -14,6 +14,8 @@ from winreg import HKEY_CURRENT_USER, HKEY_LOCAL_MACHINE, KEY_READ, KEY_WOW64_32
 from app.emulators.base import EmulatorProvider
 from app.models import EmulatorInstance, InstanceState
 
+PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+
 
 class LdPlayerProvider(EmulatorProvider):
     PROCESS_QUERY_LIMITED_INFORMATION = 0x1000
@@ -170,6 +172,8 @@ class LdPlayerProvider(EmulatorProvider):
             creationflags=subprocess.CREATE_NO_WINDOW,
             timeout=20,
         )
+        if result.stdout.startswith(PNG_SIGNATURE):
+            return result.stdout
         if result.returncode != 0:
             message = result.stderr.decode("utf-8", errors="replace").strip()
             message = message or result.stdout.decode("utf-8", errors="replace").strip()
@@ -340,6 +344,23 @@ class LdPlayerProvider(EmulatorProvider):
             raise RuntimeError(message)
         return result.stdout.strip()
 
+    def _run_adb_exe_bytes(self, *arguments: str) -> bytes:
+        adb_path = self._adb_exe_path()
+        result = subprocess.run(
+            [str(adb_path), *arguments],
+            check=False,
+            capture_output=True,
+            creationflags=subprocess.CREATE_NO_WINDOW,
+            timeout=20,
+        )
+        if result.stdout.startswith(PNG_SIGNATURE):
+            return result.stdout
+        if result.returncode != 0:
+            message = result.stderr.decode("utf-8", errors="replace").strip()
+            message = message or result.stdout.decode("utf-8", errors="replace").strip()
+            raise RuntimeError(message or "ADB command failed")
+        return result.stdout
+
     def _adb_exe_path(self) -> Path:
         local_adb = self.console_path.parent / "adb.exe"
         if local_adb.is_file():
@@ -368,7 +389,24 @@ class LdPlayerProvider(EmulatorProvider):
 
     def screenshot_png(self, index: int) -> bytes:
         self._wait_for_adb(index, timeout=10)
-        return self._run_bytes("adb", "--index", str(index), "--command", "exec-out screencap -p")
+        errors: list[str] = []
+        for serial in self._candidate_adb_serials(index):
+            try:
+                if serial.startswith("127.0.0.1:"):
+                    self._run_adb_exe("connect", serial)
+                screenshot = self._run_adb_exe_bytes("-s", serial, "exec-out", "screencap", "-p")
+                if screenshot.startswith(PNG_SIGNATURE):
+                    return screenshot
+                errors.append(f"{serial}: screenshot output was not a PNG")
+            except RuntimeError as exc:
+                errors.append(f"{serial}: {exc}")
+        try:
+            screenshot = self._run_bytes("adb", "--index", str(index), "--command", "exec-out screencap -p")
+            if screenshot.startswith(PNG_SIGNATURE):
+                return screenshot
+        except RuntimeError as exc:
+            errors.append(f"dnconsole adb: {exc}")
+        raise RuntimeError("Could not capture emulator screenshot. " + " | ".join(errors))
 
     def drag(self, index: int, start: tuple[int, int], end: tuple[int, int], duration_ms: int = 350) -> None:
         self._wait_for_adb(index, timeout=10)

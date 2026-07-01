@@ -920,7 +920,7 @@ class MainWindow(QMainWindow):
 
         def fail(message: str) -> None:
             cleanup()
-            QMessageBox.warning(self, error_title, message)
+            QMessageBox.warning(self, error_title, _friendly_error_message(message))
             self.refresh_instances()
 
         signals.finished.connect(finish)
@@ -1049,3 +1049,9 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event: QCloseEvent) -> None:
         super().closeEvent(event)
+
+
+def _friendly_error_message(message: str) -> str:
+    if "\ufffdPNG" in message or "%PNG" in message or len(message) > 1200:
+        return "The emulator returned screenshot data as an error. Try the action again after ADB reconnects."
+    return message
