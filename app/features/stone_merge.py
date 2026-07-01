@@ -7,7 +7,8 @@ from pathlib import Path
 
 
 DEFAULT_BAG_REGION = (27, 438, 516, 199)
-DEFAULT_SLOT_REGION = (36, 449, 507, 171)
+DEFAULT_FIRST_SLOT = (41, 448, 58, 54)
+DEFAULT_SLOT_STEP = (56, 56)
 DEFAULT_MATCH_THRESHOLD = 0.88
 DEFAULT_SLOT_MATCH_THRESHOLD = 0.83
 DEFAULT_SLOT_CONFIDENCE_GAP = 0.04
@@ -122,7 +123,8 @@ class StoneMergeScanner:
         threshold: float = DEFAULT_MATCH_THRESHOLD,
         min_distance: int = DEFAULT_MIN_DISTANCE,
         scan_region: ScanRegion = ScanRegion(*DEFAULT_BAG_REGION),
-        slot_region: ScanRegion = ScanRegion(*DEFAULT_SLOT_REGION),
+        first_slot: ScanRegion = ScanRegion(*DEFAULT_FIRST_SLOT),
+        slot_step: tuple[int, int] = DEFAULT_SLOT_STEP,
         slot_rows: int = DEFAULT_SLOT_ROWS,
         slot_columns: int = DEFAULT_SLOT_COLUMNS,
         slot_threshold: float = DEFAULT_SLOT_MATCH_THRESHOLD,
@@ -132,7 +134,8 @@ class StoneMergeScanner:
         self.threshold = threshold
         self.min_distance = min_distance
         self.scan_region = scan_region
-        self.slot_region = slot_region
+        self.first_slot = first_slot
+        self.slot_step = slot_step
         self.slot_rows = slot_rows
         self.slot_columns = slot_columns
         self.slot_threshold = slot_threshold
@@ -175,7 +178,7 @@ class StoneMergeScanner:
             if template is not None:
                 templates.append((template_path.stem, template, mask))
 
-        slots = slot_regions_for_region(clamp_region(self.slot_region, screenshot), self.slot_rows, self.slot_columns)
+        slots = slot_regions_for_grid(self.first_slot, self.slot_step, self.slot_rows, self.slot_columns, screenshot)
         detections: list[SlotDetection] = []
         for row, column, slot in slots:
             slot_image = screenshot[slot.y:slot.bottom, slot.x:slot.right]
@@ -240,7 +243,8 @@ class StoneMergeScanner:
         region = clamp_region(self.scan_region, screenshot)
         overlay = screenshot.copy()
         cv2.rectangle(overlay, (region.x, region.y), (region.right, region.bottom), (0, 255, 255), 3)
-        slot_region = clamp_region(self.slot_region, screenshot)
+        slot_region = slot_bounds_for_grid(self.first_slot, self.slot_step, self.slot_rows, self.slot_columns)
+        slot_region = clamp_region(slot_region, screenshot)
         cv2.rectangle(
             overlay,
             (slot_region.x, slot_region.y),
@@ -388,16 +392,40 @@ def scan_area_for_region(image: Any, region: ScanRegion) -> tuple[Any, int, int]
     return image[clamped.y:clamped.bottom, clamped.x:clamped.right], clamped.x, clamped.y
 
 
-def slot_regions_for_region(region: ScanRegion, rows: int, columns: int) -> list[tuple[int, int, ScanRegion]]:
+def slot_regions_for_grid(
+    first_slot: ScanRegion,
+    slot_step: tuple[int, int],
+    rows: int,
+    columns: int,
+    image: Any,
+) -> list[tuple[int, int, ScanRegion]]:
     slots: list[tuple[int, int, ScanRegion]] = []
+    step_x, step_y = slot_step
     for row in range(rows):
-        top = region.y + round(row * region.height / rows)
-        bottom = region.y + round((row + 1) * region.height / rows)
         for column in range(columns):
-            left = region.x + round(column * region.width / columns)
-            right = region.x + round((column + 1) * region.width / columns)
-            slots.append((row, column, ScanRegion(left, top, right - left, bottom - top)))
+            slot = ScanRegion(
+                first_slot.x + column * step_x,
+                first_slot.y + row * step_y,
+                first_slot.width,
+                first_slot.height,
+            )
+            slots.append((row, column, clamp_region(slot, image)))
     return slots
+
+
+def slot_bounds_for_grid(
+    first_slot: ScanRegion,
+    slot_step: tuple[int, int],
+    rows: int,
+    columns: int,
+) -> ScanRegion:
+    step_x, step_y = slot_step
+    return ScanRegion(
+        first_slot.x,
+        first_slot.y,
+        (columns - 1) * step_x + first_slot.width,
+        (rows - 1) * step_y + first_slot.height,
+    )
 
 
 def best_template_score(slot_image: Any, template: Any, mask: Any) -> float:
