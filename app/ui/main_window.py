@@ -497,6 +497,8 @@ class MainWindow(QMainWindow):
                 "path": str(preview.path),
                 "match_count": preview.match_count,
                 "template_count": preview.template_count,
+                "uncertain_count": preview.uncertain_count,
+                "slot_count": preview.slot_count,
             }
 
         self._run_background(work, self._finish_preview_stone_bag_area, "Bag preview failed")
@@ -507,13 +509,18 @@ class MainWindow(QMainWindow):
         path = str(result["path"])
         match_count = int(result.get("match_count", 0))
         template_count = int(result.get("template_count", 0))
+        uncertain_count = int(result.get("uncertain_count", 0))
+        slot_count = int(result.get("slot_count", 0))
         QMessageBox.information(
             self,
             "Bag area preview",
-            f"Saved preview image:\n{path}\n\nMatched stones: {match_count}\nTemplates loaded: {template_count}",
+            f"Saved preview image:\n{path}\n\n"
+            f"Confident slots: {match_count}/{slot_count}\n"
+            f"Uncertain slots: {uncertain_count}\n"
+            f"Templates loaded: {template_count}",
         )
         self.statusBar().showMessage(
-            f"Saved bag preview: {match_count} match(es), {template_count} template(s)",
+            f"Saved bag preview: {match_count}/{slot_count} confident, {uncertain_count} uncertain",
             8000,
         )
 

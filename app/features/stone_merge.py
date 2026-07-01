@@ -8,7 +8,11 @@ from pathlib import Path
 
 DEFAULT_BAG_REGION = (27, 438, 516, 199)
 DEFAULT_MATCH_THRESHOLD = 0.88
+DEFAULT_SLOT_MATCH_THRESHOLD = 0.83
+DEFAULT_SLOT_CONFIDENCE_GAP = 0.04
 DEFAULT_MIN_DISTANCE = 24
+DEFAULT_SLOT_ROWS = 3
+DEFAULT_SLOT_COLUMNS = 9
 OPENCV_INSTALL_HINT = (
     "OpenCV is required for Merge stones. Install the project requirements with "
     "the Python runtime that starts this app."
@@ -61,6 +65,32 @@ class TemplateMatch:
 
 
 @dataclass(frozen=True)
+class SlotDetection:
+    row: int
+    column: int
+    x: int
+    y: int
+    width: int
+    height: int
+    template_name: Optional[str]
+    score: float
+    second_score: float
+    confident: bool
+
+    @property
+    def center(self) -> tuple[int, int]:
+        return self.x + self.width // 2, self.y + self.height // 2
+
+    @property
+    def label(self) -> str:
+        if self.template_name is None:
+            return "empty"
+        if not self.confident:
+            return f"? {self.template_name}"
+        return self.template_name
+
+
+@dataclass(frozen=True)
 class MergeCandidate:
     template_name: str
     first: TemplateMatch
@@ -80,6 +110,8 @@ class DebugOverlayResult:
     path: Path
     match_count: int
     template_count: int
+    uncertain_count: int
+    slot_count: int
 
 
 class StoneMergeScanner:
@@ -89,11 +121,19 @@ class StoneMergeScanner:
         threshold: float = DEFAULT_MATCH_THRESHOLD,
         min_distance: int = DEFAULT_MIN_DISTANCE,
         scan_region: ScanRegion = ScanRegion(*DEFAULT_BAG_REGION),
+        slot_rows: int = DEFAULT_SLOT_ROWS,
+        slot_columns: int = DEFAULT_SLOT_COLUMNS,
+        slot_threshold: float = DEFAULT_SLOT_MATCH_THRESHOLD,
+        slot_confidence_gap: float = DEFAULT_SLOT_CONFIDENCE_GAP,
     ) -> None:
         self.template_dir = template_dir
         self.threshold = threshold
         self.min_distance = min_distance
         self.scan_region = scan_region
+        self.slot_rows = slot_rows
+        self.slot_columns = slot_columns
+        self.slot_threshold = slot_threshold
+        self.slot_confidence_gap = slot_confidence_gap
         self.enabled_templates: Optional[set[str]] = None
 
     def set_enabled_templates(self, names: Optional[set[str]]) -> None:
@@ -101,7 +141,11 @@ class StoneMergeScanner:
 
     def find_merge_candidate(self, screenshot_png: bytes) -> Optional[MergeCandidate]:
         screenshot = decode_png(screenshot_png)
-        matches = self.find_matches(screenshot)
+        matches = [
+            slot_detection_to_match(slot)
+            for slot in self.classify_slots(screenshot)
+            if slot.confident and slot.template_name is not None
+        ]
         by_template: dict[str, list[TemplateMatch]] = {}
         for match in matches:
             by_template.setdefault(match.template_name, []).append(match)
@@ -111,6 +155,59 @@ class StoneMergeScanner:
                 ordered = sorted(template_matches, key=lambda item: item.score, reverse=True)
                 return MergeCandidate(ordered[0].template_name, ordered[0], ordered[1])
         return None
+
+    def classify_slots(self, screenshot: Any) -> list[SlotDetection]:
+        template_paths = self._template_paths()
+        if not template_paths:
+            if self.enabled_templates is not None and not self.enabled_templates:
+                raise StoneTemplateSelectionError("No stone templates are enabled for merging.")
+            raise StoneTemplateUnavailableError(
+                f"No stone templates found in {self.template_dir}. "
+                "Add cropped .png/.jpg stone images before running Merge stones."
+            )
+
+        templates = []
+        for template_path in template_paths:
+            template, mask = load_template_image(template_path)
+            if template is not None:
+                templates.append((template_path.stem, template, mask))
+
+        slots = slot_regions_for_region(clamp_region(self.scan_region, screenshot), self.slot_rows, self.slot_columns)
+        detections: list[SlotDetection] = []
+        for row, column, slot in slots:
+            slot_image = screenshot[slot.y:slot.bottom, slot.x:slot.right]
+            scores = sorted(
+                (
+                    (name, best_template_score(slot_image, template, mask))
+                    for name, template, mask in templates
+                    if template.shape[0] <= slot_image.shape[0] and template.shape[1] <= slot_image.shape[1]
+                ),
+                key=lambda item: item[1],
+                reverse=True,
+            )
+            best_name = scores[0][0] if scores else None
+            best_score = scores[0][1] if scores else 0.0
+            second_score = scores[1][1] if len(scores) > 1 else 0.0
+            confident = (
+                best_name is not None
+                and best_score >= self.slot_threshold
+                and best_score - second_score >= self.slot_confidence_gap
+            )
+            detections.append(
+                SlotDetection(
+                    row=row,
+                    column=column,
+                    x=slot.x,
+                    y=slot.y,
+                    width=slot.width,
+                    height=slot.height,
+                    template_name=best_name,
+                    score=best_score,
+                    second_score=second_score,
+                    confident=confident,
+                )
+            )
+        return detections
 
     def find_matches(self, screenshot: Any) -> list[TemplateMatch]:
         template_paths = self._template_paths()
@@ -151,9 +248,35 @@ class StoneMergeScanner:
             cv2.LINE_AA,
         )
         try:
-            matches = self.find_matches(screenshot)
+            slots = self.classify_slots(screenshot)
         except StoneTemplateUnavailableError:
-            matches = []
+            slots = []
+        matches = [
+            slot_detection_to_match(slot)
+            for slot in slots
+            if slot.confident and slot.template_name is not None
+        ]
+        for slot in slots:
+            color = (0, 220, 0) if slot.confident else (0, 0, 255)
+            cv2.rectangle(
+                overlay,
+                (slot.x, slot.y),
+                (slot.x + slot.width, slot.y + slot.height),
+                color,
+                1,
+            )
+            if slot.template_name is None:
+                continue
+            cv2.putText(
+                overlay,
+                f"{slot.label} {slot.score:.2f}",
+                (slot.x + 2, max(20, slot.y + 14)),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.35,
+                color,
+                1,
+                cv2.LINE_AA,
+            )
         for match in matches:
             cv2.rectangle(
                 overlay,
@@ -174,7 +297,10 @@ class StoneMergeScanner:
             )
         output_path.parent.mkdir(parents=True, exist_ok=True)
         cv2.imwrite(str(output_path), overlay)
-        return DebugOverlayResult(output_path, len(matches), len(self._template_paths()))
+        uncertain_count = len(
+            [slot for slot in slots if slot.template_name is not None and not slot.confident]
+        )
+        return DebugOverlayResult(output_path, len(matches), len(self._template_paths()), uncertain_count, len(slots))
 
     def _template_paths(self) -> list[Path]:
         if not self.template_dir.is_dir():
@@ -249,6 +375,41 @@ def clamp_region(region: ScanRegion, image: Any) -> ScanRegion:
 def scan_area_for_region(image: Any, region: ScanRegion) -> tuple[Any, int, int]:
     clamped = clamp_region(region, image)
     return image[clamped.y:clamped.bottom, clamped.x:clamped.right], clamped.x, clamped.y
+
+
+def slot_regions_for_region(region: ScanRegion, rows: int, columns: int) -> list[tuple[int, int, ScanRegion]]:
+    slots: list[tuple[int, int, ScanRegion]] = []
+    for row in range(rows):
+        top = region.y + round(row * region.height / rows)
+        bottom = region.y + round((row + 1) * region.height / rows)
+        for column in range(columns):
+            left = region.x + round(column * region.width / columns)
+            right = region.x + round((column + 1) * region.width / columns)
+            slots.append((row, column, ScanRegion(left, top, right - left, bottom - top)))
+    return slots
+
+
+def best_template_score(slot_image: Any, template: Any, mask: Any) -> float:
+    cv2, np = load_opencv()
+    if template.shape[0] > slot_image.shape[0] or template.shape[1] > slot_image.shape[1]:
+        return 0.0
+    if mask is not None:
+        result = cv2.matchTemplate(slot_image, template, cv2.TM_CCORR_NORMED, mask=mask)
+        result = np.nan_to_num(result, nan=0.0, posinf=0.0, neginf=0.0)
+    else:
+        result = cv2.matchTemplate(slot_image, template, cv2.TM_CCOEFF_NORMED)
+    return float(result.max()) if result.size else 0.0
+
+
+def slot_detection_to_match(slot: SlotDetection) -> TemplateMatch:
+    return TemplateMatch(
+        template_name=slot.template_name or "",
+        score=slot.score,
+        x=slot.x,
+        y=slot.y,
+        width=slot.width,
+        height=slot.height,
+    )
 
 
 def match_template(
