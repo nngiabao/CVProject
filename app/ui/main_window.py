@@ -956,8 +956,10 @@ class MainWindow(QMainWindow):
 
         def work() -> dict[str, object]:
             try:
+                self._append_merge_log(instance_index, "tick started")
                 screenshot = self.provider.screenshot_png(instance_index)
                 candidates = self.stone_scanner.find_merge_candidates(screenshot)
+                self._append_merge_log(instance_index, f"found {len(candidates)} merge candidate(s)")
                 if not candidates:
                     return {
                         "instance_index": instance_index,
@@ -967,6 +969,10 @@ class MainWindow(QMainWindow):
                 merges = []
                 for candidate in candidates:
                     duration_ms = random.randint(*STONE_MERGE_DRAG_DURATION_MS)
+                    self._append_merge_log(
+                        instance_index,
+                        f"drag {candidate.template_name} {candidate.drag_from}->{candidate.drag_to} {duration_ms}ms",
+                    )
                     self.provider.drag(instance_index, candidate.drag_from, candidate.drag_to, duration_ms=duration_ms)
                     merges.append(
                         {
@@ -985,6 +991,7 @@ class MainWindow(QMainWindow):
                     "merges": merges,
                 }
             except Exception as exc:
+                self._append_merge_log(instance_index, f"error: {exc}")
                 return {
                     "instance_index": instance_index,
                     "task_row": task_row,
@@ -1034,6 +1041,16 @@ class MainWindow(QMainWindow):
             self._run_enabled_task_once(instance_index, task_row)
 
         QTimer.singleShot(int(STONE_MERGE_INTERVAL_SECONDS * 1000), run_tick)
+
+    def _append_merge_log(self, instance_index: int, message: str) -> None:
+        try:
+            log_dir = OUTPUT_DIR / "stone-debug"
+            log_dir.mkdir(parents=True, exist_ok=True)
+            timestamp = time.strftime("%Y-%m-%d %H:%M:%S")
+            with (log_dir / "merge-events.log").open("a", encoding="utf-8") as log_file:
+                log_file.write(f"{timestamp} instance {instance_index}: {message}\n")
+        except OSError:
+            pass
 
     def _apply_saved_wireguard_check_blocking(self, instance_index: int) -> Optional[dict[str, str]]:
         person = self.bot_manager.person(instance_index)
