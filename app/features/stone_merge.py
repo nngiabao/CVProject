@@ -8,13 +8,13 @@ from pathlib import Path
 
 DEFAULT_BAG_REGION = (27, 438, 516, 199)
 DEFAULT_FIRST_SLOT = (41, 448, 59, 55)
-DEFAULT_SLOT_STEP = (56, 64)
+DEFAULT_SLOT_STEP = (62, 64)
 DEFAULT_MATCH_THRESHOLD = 0.88
 DEFAULT_SLOT_MATCH_THRESHOLD = 0.83
 DEFAULT_SLOT_CONFIDENCE_GAP = 0.04
 DEFAULT_MIN_DISTANCE = 24
 DEFAULT_SLOT_ROWS = 3
-DEFAULT_SLOT_COLUMNS = 9
+DEFAULT_SLOT_COLUMNS = 8
 OPENCV_INSTALL_HINT = (
     "OpenCV is required for Merge stones. Install the project requirements with "
     "the Python runtime that starts this app."
