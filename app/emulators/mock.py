@@ -50,6 +50,9 @@ class MockEmulatorProvider(EmulatorProvider):
         self.stop(index)
         self.start(index)
 
+    def rename(self, index: int, name: str) -> None:
+        self._find(index).name = name
+
     def screenshot_png(self, index: int) -> bytes:
         return base64.b64decode(
             "iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAIAAACQd1PeAAAADElEQVR4nGNgYGAAAAAEAAGjChXjAAAAAElFTkSuQmCC"

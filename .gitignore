@@ -12,6 +12,8 @@ tools/tun2socks/logs/
 .venv/
 .venv39/
 venv/
+<<<<<<< HEAD
 env/
 __pycache__/
 *.pyc
+

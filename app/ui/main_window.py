@@ -16,6 +16,7 @@ from PySide6.QtWidgets import (
     QFrame,
     QHBoxLayout,
     QHeaderView,
+    QInputDialog,
     QLabel,
     QMainWindow,
     QMessageBox,
@@ -70,6 +71,7 @@ class MainWindow(QMainWindow):
         self.background_tasks: list[BackgroundSignals] = []
         self.running_task_ticks: set[tuple[int, int]] = set()
         self.scheduled_task_ticks: set[tuple[int, int]] = set()
+        self.task_run_tokens: dict[tuple[int, int], int] = {}
 
         self.setWindowTitle("GrowStone Bot")
         self.resize(1240, 760)
@@ -297,7 +299,7 @@ class MainWindow(QMainWindow):
             )
             for column, value in enumerate(values):
                 if column == 1:
-                    self.table.setCellWidget(row, column, self._build_row_actions(instance.index))
+                    self.table.setCellWidget(row, column, self._build_row_actions(instance))
                     continue
                 item = QTableWidgetItem(value)
                 item.setData(Qt.UserRole, instance.index)
@@ -337,7 +339,8 @@ class MainWindow(QMainWindow):
         self.running_metric.setText(f"Running: {running}")
         self.assigned_metric.setText(f"Assigned: {self.bot_manager.assigned_count()}")
 
-    def _build_row_actions(self, instance_index: int) -> QWidget:
+    def _build_row_actions(self, instance: EmulatorInstance) -> QWidget:
+        instance_index = instance.index
         widget = QWidget()
         layout = QHBoxLayout(widget)
         layout.setContentsMargins(0, 0, 0, 0)
@@ -358,6 +361,11 @@ class MainWindow(QMainWindow):
                 "Restart",
                 lambda: self._run_instance_action(instance_index, self.provider.restart, "restarted"),
             ),
+            (
+                QStyle.SP_FileDialogDetailedView,
+                "Rename",
+                lambda: self.rename_instance(instance_index),
+            ),
         )
         for icon_name, tooltip, callback in actions:
             button = QPushButton()
@@ -365,6 +373,8 @@ class MainWindow(QMainWindow):
             button.setIcon(self.style().standardIcon(icon_name))
             button.setToolTip(tooltip)
             button.setFixedSize(28, 28)
+            if tooltip == "Rename":
+                button.setEnabled(instance.state == InstanceState.STOPPED)
             button.clicked.connect(callback)
             layout.addWidget(button)
         layout.addStretch()
@@ -387,16 +397,22 @@ class MainWindow(QMainWindow):
         if instance_index is None:
             return
         tasks = self.bot_manager.person(instance_index).tasks or []
-        if item.row() >= len(tasks):
+        task_row = item.row()
+        if task_row >= len(tasks):
             return
         enabled = item.checkState() == Qt.Checked
         person = self.bot_manager.person(instance_index)
-        person.set_task_enabled(item.row(), enabled)
-        self._append_merge_log(instance_index, f"task row {item.row()} {'enabled' if enabled else 'disabled'}")
+        person.set_task_enabled(task_row, enabled)
+        self._append_merge_log(instance_index, f"task row {task_row} {'enabled' if enabled else 'disabled'}")
         self._render_task_table(instance_index)
         if enabled:
-            self._append_merge_log(instance_index, f"task row {item.row()} start requested")
-            self._run_enabled_task_once(instance_index, item.row())
+            self._bump_task_run_token(instance_index, task_row)
+            self._append_merge_log(instance_index, f"task row {task_row} start requested")
+            self._run_enabled_task_once(instance_index, task_row)
+        else:
+            self._bump_task_run_token(instance_index, task_row)
+            self.running_task_ticks.discard((instance_index, task_row))
+            self.scheduled_task_ticks.discard((instance_index, task_row))
 
     def _render_task_table(self, instance_index: Optional[int]) -> None:
         if self.task_table is None:
@@ -618,6 +634,36 @@ class MainWindow(QMainWindow):
             for instance in self.instances
             if self.bot_manager.person(instance.index).wireguard_config is not None
         ]
+
+    def rename_instance(self, instance_index: int) -> None:
+        instance = self._instance_by_index(instance_index)
+        if instance is None:
+            QMessageBox.information(self, "Select instance", "Select one emulator instance first.")
+            return
+        if instance.state != InstanceState.STOPPED:
+            QMessageBox.information(self, "Stop instance first", "Rename is only available when the emulator is stopped.")
+            return
+
+        new_name, accepted = QInputDialog.getText(self, "Rename instance", "New name:", text=instance.name)
+        new_name = new_name.strip()
+        if not accepted or not new_name or new_name == instance.name:
+            return
+
+        self.statusBar().showMessage(f"Renaming instance {instance_index}...", 5000)
+        self.refresh_timer.stop()
+
+        def work() -> dict[str, Any]:
+            self.provider.rename(instance_index, new_name)
+            return {
+                "instance_index": instance_index,
+                "verb": "renamed",
+            }
+
+        self._run_background(
+            work,
+            self._finish_instance_action,
+            "Rename failed",
+        )
 
     def assign_wireguard_config(self) -> None:
         indexes = self.selected_indexes()
@@ -959,6 +1005,7 @@ class MainWindow(QMainWindow):
         self.refresh_stone_templates()
         self._render_task_table(instance_index)
         self.running_task_ticks.add(tick_key)
+        run_token = self.task_run_tokens.get(tick_key, 0)
 
         def work() -> dict[str, object]:
             try:
@@ -977,10 +1024,14 @@ class MainWindow(QMainWindow):
                     return {
                         "instance_index": instance_index,
                         "task_row": task_row,
+                        "run_token": run_token,
                         "merged_count": 0,
                     }
                 merges = []
                 for candidate in candidates:
+                    if self.task_run_tokens.get(tick_key, 0) != run_token:
+                        self._append_merge_log(instance_index, f"task row {task_row} stopped before drag")
+                        break
                     duration_ms = random.randint(*STONE_MERGE_DRAG_DURATION_MS)
                     self._append_merge_log(
                         instance_index,
@@ -1000,6 +1051,7 @@ class MainWindow(QMainWindow):
                 return {
                     "instance_index": instance_index,
                     "task_row": task_row,
+                    "run_token": run_token,
                     "merged_count": len(merges),
                     "merges": merges,
                 }
@@ -1008,6 +1060,7 @@ class MainWindow(QMainWindow):
                 return {
                     "instance_index": instance_index,
                     "task_row": task_row,
+                    "run_token": run_token,
                     "error": str(exc),
                 }
 
@@ -1023,12 +1076,17 @@ class MainWindow(QMainWindow):
             return
         instance_index = int(result["instance_index"])
         task_row = int(result["task_row"])
+        run_token = int(result.get("run_token", self.task_run_tokens.get((instance_index, task_row), 0)))
         person = self.bot_manager.person(instance_index)
         tasks = person.tasks or []
         if task_row >= len(tasks):
             return
         error = result.get("error")
         self.running_task_ticks.discard((instance_index, task_row))
+        if self.task_run_tokens.get((instance_index, task_row), 0) != run_token:
+            self._append_merge_log(instance_index, f"task row {task_row} ignored stale tick")
+            self._render_task_table(instance_index)
+            return
         if error:
             tasks[task_row].status = "Error"
             QMessageBox.warning(self, "Merge stones", str(error))
@@ -1044,9 +1102,13 @@ class MainWindow(QMainWindow):
         if tick_key in self.running_task_ticks or tick_key in self.scheduled_task_ticks:
             return
         self.scheduled_task_ticks.add(tick_key)
+        run_token = self.task_run_tokens.get(tick_key, 0)
 
         def run_tick() -> None:
             self.scheduled_task_ticks.discard(tick_key)
+            if self.task_run_tokens.get(tick_key, 0) != run_token:
+                self._append_merge_log(instance_index, f"task row {task_row} skipped: stale scheduled tick")
+                return
             person = self.bot_manager.person(instance_index)
             tasks = person.tasks or []
             if task_row >= len(tasks) or not tasks[task_row].enabled:
@@ -1056,6 +1118,10 @@ class MainWindow(QMainWindow):
         delay_seconds = random.randint(*STONE_MERGE_INTERVAL_SECONDS)
         self._append_merge_log(instance_index, f"next tick in {delay_seconds}s")
         QTimer.singleShot(delay_seconds * 1000, run_tick)
+
+    def _bump_task_run_token(self, instance_index: int, task_row: int) -> None:
+        tick_key = (instance_index, task_row)
+        self.task_run_tokens[tick_key] = self.task_run_tokens.get(tick_key, 0) + 1
 
     def _append_merge_log(self, instance_index: int, message: str) -> None:
         try:

@@ -31,6 +31,9 @@ class EmulatorProvider(ABC):
     def restart(self, index: int) -> None:
         raise NotImplementedError
 
+    def rename(self, index: int, name: str) -> None:
+        raise NotImplementedError("Rename is not supported by this emulator provider")
+
     def screenshot_png(self, index: int) -> bytes:
         raise NotImplementedError("Screenshot capture is not supported by this emulator provider")
 
