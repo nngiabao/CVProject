@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import random
 import threading
 import time
 from typing import Any, Optional
@@ -37,7 +38,7 @@ from app.wireguard import WireGuardEmulatorManager
 
 
 STONE_MERGE_INTERVAL_SECONDS = 45
-STONE_MERGE_SETTLE_SECONDS = 0.65
+STONE_MERGE_BETWEEN_DOUBLE_TAPS_SECONDS = (4, 7)
 STONE_TEMPLATE_CHECK_COLUMN = 0
 STONE_TEMPLATE_NAME_COLUMN = 1
 
@@ -1026,7 +1027,7 @@ class MainWindow(QMainWindow):
                         "merged_count": 0,
                     }
                 merges = []
-                for target in targets:
+                for target_index, target in enumerate(targets):
                     if self.task_run_tokens.get(tick_key, 0) != run_token:
                         self._append_merge_log(instance_index, f"task row {task_row} stopped before double tap")
                         break
@@ -1042,8 +1043,10 @@ class MainWindow(QMainWindow):
                             "position": target.tap_position,
                         }
                     )
-                    if STONE_MERGE_SETTLE_SECONDS > 0:
-                        time.sleep(STONE_MERGE_SETTLE_SECONDS)
+                    if target_index < len(targets) - 1:
+                        delay_seconds = random.randint(*STONE_MERGE_BETWEEN_DOUBLE_TAPS_SECONDS)
+                        self._append_merge_log(instance_index, f"wait {delay_seconds}s before next double tap")
+                        time.sleep(delay_seconds)
                 return {
                     "instance_index": instance_index,
                     "task_row": task_row,
