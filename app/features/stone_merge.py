@@ -108,6 +108,17 @@ class MergeCandidate:
 
 
 @dataclass(frozen=True)
+class DoubleClickTarget:
+    template_name: str
+    match: TemplateMatch
+    duplicate_count: int
+
+    @property
+    def tap_position(self) -> tuple[int, int]:
+        return self.match.center
+
+
+@dataclass(frozen=True)
 class DebugOverlayResult:
     path: Path
     match_count: int
@@ -170,6 +181,19 @@ class StoneMergeScanner:
         for template_matches in by_template.values():
             candidates.extend(non_overlapping_pairs(template_matches))
         return sorted(candidates, key=lambda candidate: distance(candidate.drag_from, candidate.drag_to))
+
+    def double_click_targets_for_matches(self, matches: list[TemplateMatch]) -> list[DoubleClickTarget]:
+        by_template: dict[str, list[TemplateMatch]] = {}
+        for match in matches:
+            by_template.setdefault(match.template_name, []).append(match)
+
+        targets: list[DoubleClickTarget] = []
+        for template_name, template_matches in by_template.items():
+            if len(template_matches) < 2:
+                continue
+            best_match = max(template_matches, key=lambda match: match.score)
+            targets.append(DoubleClickTarget(template_name, best_match, len(template_matches)))
+        return sorted(targets, key=lambda target: (-target.duplicate_count, target.template_name))
 
     def classify_slots(self, screenshot: Any) -> list[SlotDetection]:
         template_paths = self._template_paths()

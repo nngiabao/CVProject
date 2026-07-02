@@ -37,9 +37,8 @@ from app.paths import APP_ROOT, OUTPUT_DIR, STONE_TEMPLATE_DIR
 from app.wireguard import WireGuardEmulatorManager
 
 
-STONE_MERGE_INTERVAL_SECONDS = (35, 45)
-STONE_MERGE_SETTLE_SECONDS = 0.65
-STONE_MERGE_DRAG_DURATION_MS = (50, 100)
+STONE_MERGE_INTERVAL_SECONDS = 45
+STONE_MERGE_BETWEEN_DOUBLE_TAPS_SECONDS = (4, 7)
 STONE_TEMPLATE_CHECK_COLUMN = 0
 STONE_TEMPLATE_NAME_COLUMN = 1
 
@@ -1015,12 +1014,12 @@ class MainWindow(QMainWindow):
                 counts: dict[str, int] = {}
                 for match in matches:
                     counts[match.template_name] = counts.get(match.template_name, 0) + 1
-                candidates = self.stone_scanner.merge_candidates_for_matches(matches)
+                targets = self.stone_scanner.double_click_targets_for_matches(matches)
                 self._append_merge_log(
                     instance_index,
-                    f"confident matches {len(matches)} [{_format_counts(counts)}], candidates {len(candidates)}",
+                    f"confident matches {len(matches)} [{_format_counts(counts)}], double-click targets {len(targets)}",
                 )
-                if not candidates:
+                if not targets:
                     return {
                         "instance_index": instance_index,
                         "task_row": task_row,
@@ -1028,26 +1027,26 @@ class MainWindow(QMainWindow):
                         "merged_count": 0,
                     }
                 merges = []
-                for candidate in candidates:
+                for target_index, target in enumerate(targets):
                     if self.task_run_tokens.get(tick_key, 0) != run_token:
-                        self._append_merge_log(instance_index, f"task row {task_row} stopped before drag")
+                        self._append_merge_log(instance_index, f"task row {task_row} stopped before double tap")
                         break
-                    duration_ms = random.randint(*STONE_MERGE_DRAG_DURATION_MS)
                     self._append_merge_log(
                         instance_index,
-                        f"drag {candidate.template_name} {candidate.drag_from}->{candidate.drag_to} {duration_ms}ms",
+                        f"double tap {target.template_name} x{target.duplicate_count} at {target.tap_position}",
                     )
-                    self.provider.drag(instance_index, candidate.drag_from, candidate.drag_to, duration_ms=duration_ms)
+                    self.provider.double_tap(instance_index, target.tap_position)
                     merges.append(
                         {
-                            "template": candidate.template_name,
-                            "from": candidate.drag_from,
-                            "to": candidate.drag_to,
-                            "duration_ms": duration_ms,
+                            "template": target.template_name,
+                            "count": target.duplicate_count,
+                            "position": target.tap_position,
                         }
                     )
-                    if STONE_MERGE_SETTLE_SECONDS > 0:
-                        time.sleep(STONE_MERGE_SETTLE_SECONDS)
+                    if target_index < len(targets) - 1:
+                        delay_seconds = random.randint(*STONE_MERGE_BETWEEN_DOUBLE_TAPS_SECONDS)
+                        self._append_merge_log(instance_index, f"wait {delay_seconds}s before next double tap")
+                        time.sleep(delay_seconds)
                 return {
                     "instance_index": instance_index,
                     "task_row": task_row,
@@ -1092,7 +1091,7 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "Merge stones", str(error))
             self.statusBar().showMessage(f"Merge stones failed on instance {instance_index}", 5000)
         elif int(result.get("merged_count", 0)):
-            self.statusBar().showMessage(f"Merged {int(result.get('merged_count', 0))} pair(s) on instance {instance_index}", 5000)
+            self.statusBar().showMessage(f"Double-tapped {int(result.get('merged_count', 0))} target(s) on instance {instance_index}", 5000)
         self._render_task_table(instance_index)
         if not error and tasks[task_row].enabled:
             self._schedule_enabled_task_tick(instance_index, task_row)
@@ -1115,7 +1114,7 @@ class MainWindow(QMainWindow):
                 return
             self._run_enabled_task_once(instance_index, task_row)
 
-        delay_seconds = random.randint(*STONE_MERGE_INTERVAL_SECONDS)
+        delay_seconds = STONE_MERGE_INTERVAL_SECONDS
         self._append_merge_log(instance_index, f"next tick in {delay_seconds}s")
         QTimer.singleShot(delay_seconds * 1000, run_tick)
 
