@@ -286,6 +286,9 @@ class LdPlayerProvider(EmulatorProvider):
     def restart(self, index: int) -> None:
         self._run("reboot", "--index", str(index))
 
+    def rename(self, index: int, name: str) -> None:
+        self._run("rename", "--index", str(index), "--title", name)
+
     def _adb(self, index: int, command: str) -> str:
         last_error: Optional[RuntimeError] = None
         fallback_error: Optional[RuntimeError] = None
