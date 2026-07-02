@@ -39,3 +39,6 @@ class EmulatorProvider(ABC):
 
     def drag(self, index: int, start: tuple[int, int], end: tuple[int, int], duration_ms: int = 350) -> None:
         raise NotImplementedError("Touch drag is not supported by this emulator provider")
+
+    def double_tap(self, index: int, position: tuple[int, int]) -> None:
+        raise NotImplementedError("Touch double tap is not supported by this emulator provider")

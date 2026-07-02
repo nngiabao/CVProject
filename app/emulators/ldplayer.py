@@ -419,6 +419,13 @@ class LdPlayerProvider(EmulatorProvider):
             f"shell input swipe {start[0]} {start[1]} {end[0]} {end[1]} {duration}",
         )
 
+    def double_tap(self, index: int, position: tuple[int, int]) -> None:
+        self._wait_for_adb(index, timeout=10)
+        x, y = position
+        self._adb(index, f"shell input tap {x} {y}")
+        time.sleep(0.08)
+        self._adb(index, f"shell input tap {x} {y}")
+
     def _wait_for_adb(self, index: int, timeout: int = 20) -> None:
         deadline = time.monotonic() + timeout
         last_error = "device not ready"
