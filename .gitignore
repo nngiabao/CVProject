@@ -9,9 +9,10 @@ dist/
 .proxy_source.txt
 .proxy_assignments.json
 tools/tun2socks/logs/
-.venv/
 .venv39/
-venv/
 env/
-__pycache__/
-*.pyc
+outputs/
+.ldplayer_nat_map.json
+.stone_templates.json
+.wireguard_assignments.json
+.wireguard_source.txt
