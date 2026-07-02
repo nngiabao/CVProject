@@ -36,7 +36,7 @@ from app.paths import APP_ROOT, OUTPUT_DIR, STONE_TEMPLATE_DIR
 from app.wireguard import WireGuardEmulatorManager
 
 
-STONE_MERGE_INTERVAL_SECONDS = 13.0
+STONE_MERGE_INTERVAL_SECONDS = (35, 45)
 STONE_MERGE_SETTLE_SECONDS = 0.65
 STONE_MERGE_DRAG_DURATION_MS = (50, 100)
 STONE_TEMPLATE_CHECK_COLUMN = 0
@@ -1051,7 +1051,9 @@ class MainWindow(QMainWindow):
                 return
             self._run_enabled_task_once(instance_index, task_row)
 
-        QTimer.singleShot(int(STONE_MERGE_INTERVAL_SECONDS * 1000), run_tick)
+        delay_seconds = random.randint(*STONE_MERGE_INTERVAL_SECONDS)
+        self._append_merge_log(instance_index, f"next tick in {delay_seconds}s")
+        QTimer.singleShot(delay_seconds * 1000, run_tick)
 
     def _append_merge_log(self, instance_index: int, message: str) -> None:
         try:
