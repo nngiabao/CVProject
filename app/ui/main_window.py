@@ -387,16 +387,17 @@ class MainWindow(QMainWindow):
         if instance_index is None:
             return
         tasks = self.bot_manager.person(instance_index).tasks or []
-        if item.row() >= len(tasks):
+        task_row = item.row()
+        if task_row >= len(tasks):
             return
         enabled = item.checkState() == Qt.Checked
         person = self.bot_manager.person(instance_index)
-        person.set_task_enabled(item.row(), enabled)
-        self._append_merge_log(instance_index, f"task row {item.row()} {'enabled' if enabled else 'disabled'}")
+        person.set_task_enabled(task_row, enabled)
+        self._append_merge_log(instance_index, f"task row {task_row} {'enabled' if enabled else 'disabled'}")
         self._render_task_table(instance_index)
         if enabled:
-            self._append_merge_log(instance_index, f"task row {item.row()} start requested")
-            self._run_enabled_task_once(instance_index, item.row())
+            self._append_merge_log(instance_index, f"task row {task_row} start requested")
+            self._run_enabled_task_once(instance_index, task_row)
 
     def _render_task_table(self, instance_index: Optional[int]) -> None:
         if self.task_table is None:
