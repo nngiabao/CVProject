@@ -9,3 +9,7 @@ dist/
 .proxy_source.txt
 .proxy_assignments.json
 tools/tun2socks/logs/
+.venv/
+.venv39/
+venv/
+env/
