@@ -395,6 +395,7 @@ class MainWindow(QMainWindow):
         self._append_merge_log(instance_index, f"task row {item.row()} {'enabled' if enabled else 'disabled'}")
         self._render_task_table(instance_index)
         if enabled:
+            self._append_merge_log(instance_index, f"task row {item.row()} start requested")
             self._run_enabled_task_once(instance_index, item.row())
 
     def _render_task_table(self, instance_index: Optional[int]) -> None:
@@ -941,6 +942,7 @@ class MainWindow(QMainWindow):
         threading.Thread(target=runner, name="ui-background-task", daemon=True).start()
 
     def _run_enabled_task_once(self, instance_index: int, task_row: int) -> None:
+        self._append_merge_log(instance_index, f"task row {task_row} runner entered")
         tick_key = (instance_index, task_row)
         if tick_key in self.running_task_ticks:
             self._append_merge_log(instance_index, f"task row {task_row} skipped: already running")
